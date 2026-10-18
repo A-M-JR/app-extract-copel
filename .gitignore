@@ -1,0 +1,17 @@
+# ambiente / cache
+.venv/
+__pycache__/
+*.pyc
+
+# gerado pelo robô (Chrome do robô, prints, diagnóstico, fila, histórico, locks)
+dados/
+*.lock
+
+# segredos e dados de clientes — NUNCA versionar
+config_local.json
+contas.xlsx
+tests/faturas/
+tests/referencia_pdfs.json
+
+# config local do Claude Code
+.claude/settings.local.json

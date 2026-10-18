@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guia do Robô</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--txt:#1f2937;--muted:#6b7280;--line:#e5e7eb;--accent:#2e7d32;
+--accent-soft:#e8f3e9;--warn:#b54708;--warn-bg:#fffaeb;--code:#eef1f4}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f25;
+--txt:#e5e7eb;--muted:#9aa3ae;--line:#2b323a;--accent:#66bb6a;--accent-soft:#1d2b1f;
+--warn:#fdb022;--warn-bg:#2a2112;--code:#232a32}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:26px;margin:0}
+.sub{color:var(--muted);margin:4px 0 26px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:26px}
+nav a{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 14px;
+font-size:13px;color:var(--txt);text-decoration:none}
+nav a:hover{border-color:var(--accent);color:var(--accent)}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-bottom:18px}
+h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+h2 .n{background:var(--accent);color:#fff;border-radius:50%;width:28px;height:28px;display:inline-grid;
+place-items:center;font-size:14px;flex:none}
+.quando{color:var(--muted);font-size:13px;margin:0 0 14px}
+ol,ul{padding-left:22px;margin:8px 0}li{margin:6px 0}
+code{background:var(--code);border-radius:5px;padding:1px 6px;font-family:Consolas,monospace;font-size:13px}
+pre{background:var(--code);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:13px;margin:10px 0}
+.dica{background:var(--accent-soft);border-left:4px solid var(--accent);border-radius:8px;padding:10px 14px;margin-top:12px;font-size:14px}
+.alerta{background:var(--warn-bg);border-left:4px solid var(--warn);border-radius:8px;padding:10px 14px;margin-top:12px;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-size:12px;text-transform:uppercase}
+.tbl{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Robô de Faturas — guia do NUC</h1>
+  <p class="sub">Instalação, captcha com Buster, uso no dia a dia, e-mail, modo 24/7 e manutenção.</p>
+
+  <nav>
+    <a href="#instalacao">Instalação</a><a href="#uso">Dia a dia</a><a href="#painel">Painel</a>
+    <a href="#email">E-mail</a><a href="#auto">24/7</a><a href="#seguranca">Segurança</a>
+    <a href="#manutencao">Manutenção</a><a href="#estrutura">Pastas</a><a href="#arquivos">Onde ficam as coisas</a>
+  </nav>
+
+  <section id="instalacao">
+    <h2><span class="n">1</span>Instalação</h2>
+    <p class="quando">Uma vez só, com internet. Tudo fica na pasta <code>instalacao\</code>.</p>
+    <ol>
+      <li>Copie a pasta <code>robo-copel</code> inteira pro NUC.</li>
+      <li>Dê 2 cliques em <code>instalacao\INSTALAR.bat</code>. Ele pergunta passo a passo (S/N):
+        <ol>
+          <li><b>Dependências</b> — Python, Chrome e as bibliotecas do robô;</li>
+          <li><b>Atalho</b> "Robo de Faturas" com ícone na Área de Trabalho;</li>
+          <li><b>Chrome do robô</b> — abre a janela pra instalar o <b>Buster: Captcha Solver for Humans</b>;</li>
+          <li><b>Modo 24/7</b> — liga o robô pra rodar sozinho ao entrar no Windows.</li>
+        </ol></li>
+      <li>Abra o painel pelo atalho → aba <b>Conexão CRM</b> → preencha URL, token e o login do modo planilha →
+        <b>Salvar</b> → <b>Testar conexão</b>.</li>
+      <li>Aba <b>E-mail</b> → quem recebe os relatórios (veja a seção E-mail).</li>
+    </ol>
+    <div class="alerta">Token e senhas são criptografados pelo Windows e <b>só abrem no computador onde foram
+      salvos</b>. Ao levar a pasta pra outro computador, preencha de novo no painel.</div>
+    <div class="dica">Os passos também existem separados em <code>instalacao\</code>:
+      <code>instalar_dependencias.bat</code>, <code>criar_atalho.bat</code>, <code>abrir_chrome_robo.bat</code>,
+      <code>instalar_24h.bat</code> e <code>desinstalar_24h.bat</code>.</div>
+  </section>
+
+  <section id="uso">
+    <h2><span class="n">2</span>Uso no dia a dia</h2>
+    <p class="quando">Pelo painel (recomendado) ou pelos .bat da raiz.</p>
+    <div class="tbl"><table>
+      <tr><th>Comando</th><th>O que faz</th></tr>
+      <tr><td><code>painel.bat</code></td><td>Abre o painel (o mesmo do atalho)</td></tr>
+      <tr><td><code>startapi 10</code></td><td>Puxa 10 faturas do CRM, baixa e devolve o resultado</td></tr>
+      <tr><td><code>startapi</code></td><td>Processa todas as pendentes do CRM</td></tr>
+      <tr><td><code>startapi 10 --sem-enviar</code></td><td>Ensaio: baixa mas não manda pro CRM</td></tr>
+      <tr><td><code>startplan 10</code></td><td>Lê o <code>contas.xlsx</code> e salva local (não manda pro CRM)</td></tr>
+    </table></div>
+    <div class="dica">Antes de logar, o robô já separa o que vai dar errado: fatura sem login/senha, sem UC ou com mês
+      inválido não abre o navegador (fica registrada no relatório), e UC+mês repetida é baixada uma vez só e o
+      resultado é copiado pras outras.</div>
+  </section>
+
+  <section id="painel">
+    <h2><span class="n">3</span>Painel</h2>
+    <div class="tbl"><table>
+      <tr><th>Aba</th><th>Pra quê</th></tr>
+      <tr><td><b>▶ Executar</b></td><td>Rodar na mão. Botões: relatório da última execução, pasta, log,
+        consulta ao CRM e <b>histórico</b> (30 dias).</td></tr>
+      <tr><td><b>🔑 Conexão CRM</b></td><td>URL e token do CRM; login/senha do modo planilha (criptografados).</td></tr>
+      <tr><td><b>⚙ Configurações</b></td><td>Captcha (Buster / solver próprio / manual), pausas e tentativas,
+        modo 24/7 (intervalo, horário, concessionárias).</td></tr>
+      <tr><td><b>✉ E-mail</b></td><td>Destinatários, quando enviar, alertas e servidor SMTP.</td></tr>
+    </table></div>
+    <div class="dica">O selo no topo mostra o 24/7: <i>ligado · próximo 10:30</i>, <i>rodando agora</i> ou
+      <i>desligado</i>. Se começar a aparecer "Ocorreu um erro inesperado" da COPEL com frequência, aumente a pausa
+      entre logins (15–30s).</div>
+  </section>
+
+  <section id="email">
+    <h2><span class="n">4</span>Relatório por e-mail</h2>
+    <p class="quando">Painel → aba E-mail → preencha → <b>Enviar e-mail de teste</b> → <b>Salvar</b>.</p>
+    <ul>
+      <li><b>Destinatários</b>: um ou mais, separados por vírgula.</li>
+      <li><b>Quando enviar</b>: a cada execução (com o relatório HTML anexado) · só quando der erro ·
+        resumo diário (1 e-mail por dia, no horário escolhido, com o histórico anexado) · desligado.</li>
+      <li><b>Alertas</b> (chegam mesmo com o resumo diário, no máximo 1 por tipo a cada 2h): CRM fora do ar,
+        captcha falhando, ciclo do 24/7 travado, disco com menos de 5 GB, taxa de sucesso abaixo do limite,
+        resultado que o CRM não aceitou.</li>
+      <li><b>Servidor</b>: escolha o provedor e preencha usuário e senha.
+        <b>Gmail</b>: precisa da verificação em 2 etapas e de uma <i>senha de app</i>.
+        <b>Microsoft 365</b>: o administrador precisa liberar "SMTP autenticado" na caixa que envia.</li>
+    </ul>
+  </section>
+
+  <section id="auto">
+    <h2><span class="n">5</span>Modo 24/7 — sem clicar em nada</h2>
+    <p class="quando">O robô consulta o CRM sozinho a cada X minutos e processa o que estiver pendente.</p>
+    <ol>
+      <li>Ligue pelo <code>instalacao\INSTALAR.bat</code> (passo 4) ou <code>instalacao\instalar_24h.bat</code>.
+        Cria a tarefa <b>RoboFaturas24h</b> no Agendador (sobe a cada logon e reinicia se cair).</li>
+      <li><b>Logon automático do Windows</b> — o Chrome precisa da área de trabalho aberta:
+        <code>Win+R</code> → <code>netplwiz</code> → desmarque <i>"Os usuários devem digitar um nome de usuário
+        e senha"</i>.</li>
+      <li><b>BIOS do NUC</b>: <i>After Power Failure</i> = <b>Power On</b>.</li>
+    </ol>
+    <ul>
+      <li><b>Em paralelo</b>: a COPEL roda no Chrome do robô enquanto RGE e CELESC rodam ao mesmo tempo, cada uma no
+        seu navegador.</li>
+      <li><b>Fila de reenvio</b>: se o CRM não aceitar um resultado (fora do ar, timeout), ele fica guardado com o PDF e
+        é reenviado no começo da próxima execução. Nada se perde.</li>
+      <li><b>Sem insistir</b> em quem acabou de falhar: senha errada e fatura entregue esperam 24h, fatura não emitida
+        6h, cadastro inválido 12h, demais erros 1h.</li>
+    </ul>
+    <div class="alerta">Com o 24/7 rodando, o botão <b>Rodar</b> da mesma concessionária espera o ciclo dela terminar.
+      Pra desligar: <code>instalacao\desinstalar_24h.bat</code>.</div>
+  </section>
+
+  <section id="seguranca">
+    <h2><span class="n">6</span>Segurança</h2>
+    <ul>
+      <li>Token do CRM, senha do modo planilha e senha do e-mail ficam <b>criptografados</b> no
+        <code>config_local.json</code> (proteção do Windows — só abrem neste usuário/computador). Não há mais senha
+        escrita no código.</li>
+      <li><code>config_local.json</code>, <code>contas.xlsx</code> e <code>dados\</code> ficam fora do git.</li>
+      <li>Não compartilhe a pasta nem suba em nuvem pública.</li>
+    </ul>
+  </section>
+
+  <section id="manutencao">
+    <h2><span class="n">7</span>Manutenção</h2>
+    <ul>
+      <li><b>Testes</b>: <code>scripts\rodar_testes.bat</code> confere o leitor de PDF com faturas reais
+        (<code>tests\faturas\</code>), os formatos que vão pro CRM, a fila e os relatórios — sem abrir navegador e sem
+        falar com o CRM. Rode depois de qualquer mudança.</li>
+      <li><b>Git</b>: o projeto é um repositório git. <code>git log</code> mostra o histórico de mudanças;
+        pra levar ao NUC, suba num repositório <b>privado</b> e use <code>git pull</code> lá.</li>
+      <li><b>Diagnóstico</b>: <code>scripts\descobrir_rge.bat</code> / <code>descobrir_celesc.bat</code> salvam o DOM
+        das telas em <code>dados\diagnostico\</code> pra ajustar seletores.</li>
+      <li><b>Limpeza automática</b> (a cada execução, no máximo 1x a cada 6h): prints e diagnóstico após 30 dias,
+        relatórios após 90, logs do 24/7 após 15, perfis de login sem uso após 30, histórico após 180 e os caches do
+        Chrome do robô. Os PDFs das faturas <b>nunca</b> são apagados. Prazos em <code>LIMPEZA_DIAS</code>
+        (<code>robo\nucleo\config.py</code>).</li>
+    </ul>
+  </section>
+
+  <section id="estrutura">
+    <h2><span class="n">8</span>Pastas</h2>
+<pre>robo-copel\
+├── extract_copel\
+│   ├── painel.bat · startapi.bat · startplan.bat   o que você usa no dia a dia
+│   ├── GUIA-NUC.html      este guia
+│   ├── config_local.json  CRM, e-mail e ajustes do painel (segredos criptografados)
+│   ├── contas.xlsx        entrada do modo planilha
+│   ├── instalacao\        INSTALAR.bat e os passos de instalação / 24/7
+│   ├── robo\              código: start.py · main.py · painel.py · rodar_24h.py
+│   │   ├── nucleo\        config, navegador, base dos bots, e-mail, histórico, limpeza, segredos
+│   │   ├── bots\          um robô por concessionária + leitor do PDF
+│   │   ├── captcha\       Buster (atual) e solver próprio (desativado)
+│   │   ├── crm\           cliente da API do CRM + fila de reenvio
+│   │   ├── relatorios\    relatórios HTML (execução, consulta ao CRM, histórico)
+│   │   └── ferramentas\   diagnóstico (descobrir seletores)
+│   ├── scripts\           testes e diagnóstico
+│   ├── tests\             testes automáticos (+ faturas de exemplo, fora do git)
+│   ├── assets\            ícone
+│   ├── docs\              documentação antiga
+│   └── dados\             gerado pelo robô — limpa sozinho
+└── captcha-solver\        solver antigo (áudio/YOLO) — só se voltar a usá-lo</pre>
+  </section>
+
+  <section id="arquivos">
+    <h2><span class="n">9</span>Onde ficam as coisas</h2>
+    <p class="quando">Na pasta <code>Extração-copel</code>, na Área de Trabalho.</p>
+    <div class="tbl"><table>
+      <tr><th>Arquivo</th><th>O que é</th></tr>
+      <tr><td><code>faturas\</code></td><td>PDFs baixados, por concessionária</td></tr>
+      <tr><td><code>resultado_&lt;CONC&gt;_*.html / .xlsx</code></td><td>Relatório de cada execução (resumo, erros com print, log)</td></tr>
+      <tr><td><code>historico.html</code></td><td>Como o robô foi nos últimos 30 dias</td></tr>
+      <tr><td><code>consulta_crm_&lt;CONC&gt;.html</code></td><td>O que o CRM mandou coletar + pontos de atenção</td></tr>
+      <tr><td><code>ultimo_log.txt</code></td><td>Log da última execução pelo painel</td></tr>
+      <tr><td><code>status_24h.txt</code> · <code>logs\</code></td><td>Status e logs diários do modo 24/7</td></tr>
+    </table></div>
+  </section>
+</div>
+</body>
+</html>

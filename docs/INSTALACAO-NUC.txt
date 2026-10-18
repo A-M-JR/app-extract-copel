@@ -1,0 +1,71 @@
+==========================================================
+   ROBÔ DE FATURAS COPEL — INSTALAÇÃO E USO NO NUC
+==========================================================
+
+ESTRUTURA (copie a pasta-pai inteira, com as duas pastas lado a lado):
+
+    robo-copel\
+    ├── extract_copel\      (o robô — instalar.bat, rodar.bat ficam aqui)
+    └── captcha-solver\     (o resolvedor de captcha + modelos .pt)
+
+
+PRÉ-REQUISITOS (instalar 1x no NUC):
+    1. Google Chrome
+    2. Python 3.12  (baixe em https://www.python.org/downloads/
+                     e MARQUE "Add python.exe to PATH" na instalação)
+
+
+INSTALAÇÃO (1x, com internet — demora uns minutos):
+    1. Copie a pasta "robo-copel" inteira pro NUC.
+    2. Entre em  robo-copel\extract_copel  e dê 2 cliques em:  instalar.bat
+       (cria o ambiente .venv e baixa tudo: Playwright, YOLO, EasyOCR, Torch...)
+    3. Abra o config.py e confira o  API_BASE_URL :
+       tem que apontar pro CRM REAL (ex.: https://app.suaempresa.com.br),
+       NÃO "localhost". Confira também o token (API_TOKEN).
+
+
+CAPTCHA COM BUSTER (1x, depois da instalacao):
+    1. De 2 cliques em  abrir_chrome_robo.bat
+       (abre o Chrome DO ROBO - perfil proprio em dados\chrome-robo)
+    2. Nessa janela, instale o "Buster: Captcha Solver for Humans" (Usar no Chrome).
+    3. Pode deixar esse Chrome aberto; o robo reaproveita (nao reabre a cada login).
+    Voltar ao solver antigo (audio/YOLO): no config.py, CAPTCHA_METODO = "dom"
+    e MODO_NAVEGADOR = "launch".
+
+
+USO NO DIA A DIA (2 comandos, dentro da pasta extract_copel):
+
+  >> MODO API (puxa do CRM e devolve o resultado pro CRM):
+        startapi 10            -> processa 10 faturas
+        startapi               -> processa TODAS
+        startapi 10 --sem-enviar   -> ensaio (nao manda pro CRM)
+
+  >> MODO PLANILHA (le o contas.xlsx, salva local, NAO manda pro CRM):
+        startplan 10           -> processa 10 UCs da planilha
+        startplan              -> processa TODAS
+     (preencha antes:  contas.xlsx  +  PLAN_LOGIN/PLAN_SENHA no config.py)
+
+    Os dois sobem o servidor do captcha sozinhos. A janela do captcha (YOLO)
+    fica aberta com os logs; pode deixar aberta.
+
+
+MODO 24/7 (sem clicar em nada):
+    1. De 2 cliques em  instalar_24h.bat  (cria a tarefa no Agendador e ja liga).
+       O robo consulta o CRM a cada 30 min (muda no painel > Configuracoes).
+    2. Logon automatico do Windows (pra voltar sozinho depois de queda de energia
+       ou Windows Update): Win+R -> netplwiz -> desmarque "Os usuarios devem
+       digitar um nome de usuario e senha" (ou use o Autologon da Sysinternals).
+    3. Na BIOS do NUC: "After Power Failure" = Power On (liga sozinho ao voltar a luz).
+    Status: Extracao-copel\status_24h.txt  |  logs: Extracao-copel\logs
+    Desligar: desinstalar_24h.bat
+
+
+RESULTADOS:
+    Os PDFs e o relatório .xlsx vão pra pasta "Extração-copel" na Área de
+    Trabalho do NUC.
+
+
+IMPORTANTE (segurança):
+    Esta pasta contém o TOKEN da API e credenciais. Não compartilhe / não
+    suba em nuvem pública.
+==========================================================
