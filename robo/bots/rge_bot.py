@@ -303,38 +303,75 @@ class RgeBot(BotBase):
         except Exception:
             return False
 
+    def _pagina_erro_cpfl(self) -> bool:
+        """Tela de erro do portal ('Ocorreu um erro ao processar a sua solicitação'), que aparece
+        em servicosonline.../integracao-agd depois de sair/trocar de cliente."""
+        try:
+            if "integracao-agd" in (self.page.url or "").lower():
+                return True
+            loc = self.page.get_by_text(re.compile(r"ocorreu um erro ao processar a sua solicita", re.I))
+            return loc.count() > 0 and loc.first.is_visible()
+        except Exception:
+            return False
+
+    def _limpar_sessao_cpfl(self):
+        """Zera a sessão da CPFL neste navegador (cookies de b2clogin/cpfl/servicosonline +
+        storage). O navegador da RGE é só dela, então pode limpar tudo."""
+        try:
+            self.page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }")
+        except Exception:
+            pass
+        try:
+            self.context.clear_cookies()
+        except Exception:
+            pass
+
+    def _clicar_entrar_e_esperar(self) -> bool:
+        entrar = self._botao_entrar_home()
+        if not entrar:
+            return False
+        try:
+            entrar.click(timeout=5000)
+        except Exception:
+            return False
+        fim = time.time() + 30
+        while time.time() < fim:
+            # NÃO usar _campo_doc aqui: ele aceita qualquer input de texto e pegaria a
+            # busca "Digite o que você está procurando" da home
+            if "b2clogin" in (self.page.url or "").lower() or self._campo_email_b2c():
+                self._aguardar_carregamento()
+                return True
+            time.sleep(0.5)
+        return False
+
     def _abrir_login(self):
-        """Abre o login B2C. Casos da CPFL:
+        """Abre o login B2C pelo LINK DIRETO (URL_LOGIN). Casos da CPFL:
           - abre LOGADA numa sessão de outro cliente -> Sair primeiro;
-          - cai na home deslogada (às vezes com 'Ocorreu um erro ao processar a sua
-            solicitação') em vez do formulário -> clica no 'Entrar' do topo."""
-        for tentativa in range(3):
+          - cai na tela de erro 'Ocorreu um erro ao processar a sua solicitação' (bug do portal
+            depois de sair) -> NÃO clica no 'Entrar' dela (também é bugado): limpa a sessão e
+            vai de novo direto no link do login;
+          - só se o link direto falhar todas as vezes, tenta o 'Entrar' como último recurso."""
+        for tentativa in range(1, 5):
             try:
                 self.page.goto(self.URL_LOGIN, wait_until="domcontentloaded")
             except Exception:
                 pass
             self._aguardar_carregamento()
+            if "b2clogin" in (self.page.url or "").lower() and not self._pagina_erro_cpfl():
+                return                                   # formulário de login na tela
             if self.esta_logado() or self._perfil_visivel():
                 print("   [rge] abriu logado numa sessão anterior -> saindo antes de logar.")
                 self.sair()
-            if "b2clogin" in (self.page.url or "").lower():
-                return                                   # formulário de login na tela
-            entrar = self._botao_entrar_home()
-            if entrar:
-                print("   [rge] caiu na home deslogada -> clicando em 'Entrar'...")
-                try:
-                    entrar.click(timeout=5000)
-                except Exception:
-                    pass
-                fim = time.time() + 30
-                while time.time() < fim:
-                    # NÃO usar _campo_doc aqui: ele aceita qualquer input de texto e pegaria a
-                    # busca "Digite o que você está procurando" da home
-                    if "b2clogin" in (self.page.url or "").lower() or self._campo_email_b2c():
-                        self._aguardar_carregamento()
-                        return
-                    time.sleep(0.5)
-            print(f"   [rge] tela de login não abriu (tentativa {tentativa + 1}/3)...")
+            elif self._pagina_erro_cpfl():
+                print("   [rge] caiu na tela de erro do portal -> limpando a sessão e indo direto "
+                      f"no link do login (tentativa {tentativa}/4)...")
+            else:
+                print(f"   [rge] login não abriu (tentativa {tentativa}/4) -> limpando a sessão...")
+            self._limpar_sessao_cpfl()
+            time.sleep(min(2 * tentativa, 6))
+        print("   [rge] link direto não abriu o login -> último recurso: botão 'Entrar'.")
+        if not self._clicar_entrar_e_esperar():
+            print("   [rge] AVISO: não consegui abrir a tela de login da CPFL.")
 
     # -- login (Azure B2C: e-mail + senha, sem MFA) ------------------------
     def esta_logado(self) -> bool:
