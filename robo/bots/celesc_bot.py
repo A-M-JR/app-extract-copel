@@ -542,6 +542,110 @@ class CelescBot(BotBase):
         except Exception:
             loc.click(timeout=6000, force=True)
 
+    _JS_BOTAO_DO_TOPO = r"""
+    () => {
+      // 'Gerar 2ª via' VISÍVEL e que está NA FRENTE (o do modal); os das linhas do histórico
+      // ficam atrás da overlay -> elementFromPoint não devolve eles.
+      document.querySelectorAll('[data-celesc-modal]').forEach(e => e.removeAttribute('data-celesc-modal'));
+      const rx = /gerar\s*2[ªa]?\s*via/i;
+      for (const b of document.querySelectorAll('button')) {
+        if (!rx.test(b.innerText || '')) continue;
+        const r = b.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const topo = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (topo && (topo === b || b.contains(topo))) { b.setAttribute('data-celesc-modal', '1'); return true; }
+      }
+      return false;
+    }
+    """
+
+    def _botao_gerar_do_modal(self):
+        """O 'Gerar 2ª via' DE DENTRO do modal 'Pagar conta'. Atenção: no DOM ele vem ANTES
+        dos ~30 'Gerar 2ª via' das linhas do histórico (que ficam atrás do modal) — pegar o
+        último clicava num botão escondido e o download nunca vinha."""
+        rx = re.compile(r"gerar\s*2[ªa]\s*via", re.I)
+        modal = self.page.locator(
+            "[role=dialog], mat-dialog-container, .cdk-overlay-pane, [class*='modal' i], [class*='dialog' i]"
+        ).filter(has_text=re.compile(r"detalhamento da conta", re.I))
+        try:
+            for i in range(modal.count() - 1, -1, -1):
+                b = modal.nth(i).get_by_role("button", name=rx)
+                if b.count() > 0 and b.first.is_visible():
+                    return b.first
+        except Exception:
+            pass
+        try:   # fallback: o que está visível NA FRENTE da tela
+            if self.page.evaluate(self._JS_BOTAO_DO_TOPO):
+                return self.page.locator("[data-celesc-modal='1']").first
+        except Exception:
+            pass
+        return None
+
+    def _clicar_e_pegar_pdf(self, loc, conta: dict, timeout_s: int | None = None) -> str:
+        """Clica e espera o PDF chegar de qualquer jeito que o portal mande: DOWNLOAD direto
+        ou NOVA ABA com o PDF (url http ou blob:). Devolve o caminho salvo ('' se não veio)."""
+        timeout_s = timeout_s or config.TIMEOUT_MS / 1000
+        downloads, abas = [], []
+
+        def on_dl(d):          # (o Playwright não aceita list.append direto como handler)
+            downloads.append(d)
+
+        def on_aba(nova):
+            abas.append(nova)
+            nova.on("download", on_dl)
+
+        self.page.on("download", on_dl)
+        self.context.on("page", on_aba)
+        try:
+            self._clicar_pw(loc)
+            fim = time.time() + timeout_s
+            while time.time() < fim:
+                if downloads:
+                    return self._salvar_download(downloads[0], conta)
+                for aba in abas:
+                    dados = self._pdf_da_aba(aba)
+                    if dados:
+                        try:
+                            aba.close()
+                        except Exception:
+                            pass
+                        return self._salvar_bytes(dados, conta)
+                time.sleep(0.5)
+            return ""
+        finally:
+            for alvo, ev, fn in ((self.page, "download", on_dl), (self.context, "page", on_aba)):
+                try:
+                    alvo.remove_listener(ev, fn)
+                except Exception:
+                    pass
+
+    def _pdf_da_aba(self, aba) -> bytes:
+        """Bytes do PDF aberto numa aba nova (http ou blob:). b'' se ainda não deu."""
+        try:
+            url = aba.url or ""
+            if not url or url == "about:blank":
+                return b""
+            if url.startswith("blob:"):
+                nums = aba.evaluate("async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", url)
+                dados = bytes(nums)
+            else:
+                dados = self.context.request.get(url).body()
+            return dados if dados[:5] == b"%PDF-" else b""
+        except Exception:
+            return b""
+
+    def _salvar_bytes(self, dados: bytes, conta: dict) -> str:
+        base = config.sanitizar(conta.get("nome_cliente") or conta.get("uc") or "fatura")
+        destino = config.PASTA_FATURAS / f"{base}_{config.sanitizar(conta['mes_referencia'])}.pdf"
+        try:
+            config.PASTA_FATURAS.mkdir(parents=True, exist_ok=True)
+            destino.write_bytes(dados)
+            print(f"   [pdf] Salvo (aba nova): {destino}")
+            return str(destino)
+        except Exception as e:
+            print(f"   [celesc] falha ao salvar o PDF: {type(e).__name__}: {e}")
+            return ""
+
     def _baixar_por_indice(self, tipo: str, conta: dict) -> str:
         """Baixa a 2ª via clicando (Playwright/trusted) o botão que o _achar_2via MARCOU
         ([data-celesc-alvo]). 'gerar' baixa direto; 'pagar' abre o modal 'Pagar conta' e o
@@ -563,21 +667,33 @@ class CelescBot(BotBase):
                         pass
                     time.sleep(0.5)
                 time.sleep(1.0)
-                # o 'Gerar 2ª via' do MODAL é o último no DOM (a overlay é anexada por último)
-                botao = self.page.get_by_role("button", name=re.compile(r"gerar\s*2[ªa]\s*via", re.I))
-                print("   [celesc] modal aberto — clicando 'Gerar 2ª via'...")
-                with self.page.expect_download(timeout=config.TIMEOUT_MS) as dl_info:
-                    self._clicar_pw(botao.last)
+                botao = self._botao_gerar_do_modal()
+                if botao is None:
+                    print("   [celesc] não achei o 'Gerar 2ª via' DENTRO do modal.")
+                    self._dump(f"falha_modal_{tag}")
+                    return ""
+                print("   [celesc] modal aberto — clicando 'Gerar 2ª via' (do modal)...")
+                arquivo = self._clicar_e_pegar_pdf(botao, conta)
             else:
                 print("   [celesc] gerando 2ª via (download direto)...")
-                with self.page.expect_download(timeout=config.TIMEOUT_MS) as dl_info:
-                    self._clicar_pw(alvo)
-            download = dl_info.value
+                arquivo = self._clicar_e_pegar_pdf(alvo, conta)
         except Exception as e:
-            print(f"   [celesc] download não iniciou ({tipo}): {type(e).__name__}: {e}")
+            print(f"   [celesc] erro ao gerar a 2ª via ({tipo}): {type(e).__name__}: {e}")
+            arquivo = ""
+        if not arquivo:
+            print(f"   [celesc] o PDF não chegou ({tipo}) — nem download nem aba nova.")
             self._dump(f"falha_download_{tag}")
-            return ""
-        return self._salvar_download(download, conta)
+        self._fechar_modal_pagar()
+        return arquivo
+
+    def _fechar_modal_pagar(self):
+        """Fecha o modal 'Pagar conta' (senão ele tapa a próxima fatura)."""
+        try:
+            b = self.page.get_by_role("button", name=re.compile(r"^\s*fechar\s*$", re.I))
+            if b.count() > 0 and b.last.is_visible():
+                b.last.click(timeout=3000)
+        except Exception:
+            pass
 
     def _salvar_download(self, download, conta: dict) -> str:
         base = config.sanitizar(conta.get("nome_cliente") or conta.get("uc") or "fatura")
@@ -627,7 +743,7 @@ class CelescBot(BotBase):
             return ""
 
     def processar_uc(self, conta: dict) -> dict:
-        from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA
+        from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO
         uc = conta.get("uc", "")
         # o login pode encadear telas antes do dashboard:
         #   1) 'escolha um parceiro de negócio' (CPF pessoal vs CNPJ do negócio) -> casa por cnpj
@@ -670,9 +786,9 @@ class CelescBot(BotBase):
                     "arquivo": "", "mensagem": f"CELESC: sem 2ª via ({nome}/{mes_ano})"}
         print(f"   [celesc] achei a fatura ({tipo}) — venc {venc or alvo}, valor {valor or '?'}.")
         arquivo = self._baixar_por_indice(tipo, conta)
-        if not arquivo:
-            return {"status": FATURA_NAO_EMITIDA, "uc_nova": uc_nova, "vencimento": venc, "valor": valor,
-                    "arquivo": "", "mensagem": f"CELESC: 2ª via não baixou (venc {alvo})"}
+        if not arquivo:   # a fatura EXISTE (achou no histórico) -> erro ao baixar, não 'não emitida'
+            return {"status": ERRO, "uc_nova": uc_nova, "vencimento": venc, "valor": valor,
+                    "arquivo": "", "mensagem": f"CELESC: fatura achada mas a 2ª via não baixou (venc {venc or alvo})"}
         return {"status": CONCLUIDO, "uc_nova": uc_nova, "vencimento": venc, "valor": valor,
                 "arquivo": arquivo, "mensagem": "Fatura baixada"}
 
