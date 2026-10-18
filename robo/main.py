@@ -79,11 +79,13 @@ def _gravar_planilha(caminho_planilha, conta: dict, status: str, uc_aneel: str =
         print(f"   [planilha] AVISO: {e}")
 
 
-def _enum_status(status_interno: str) -> str:
+def _enum_status(status_interno: str, mensagem: str = "") -> str:
     """Mapeia o status interno do robô -> enum status_leitura da API."""
     from resultado_log import FATURA_NAO_EMITIDA
     from api_faturas import (STATUS_COMPLETE, STATUS_PDF_NAO_ENCONTRADO,
-                             STATUS_PDF_ERRO_LEITURA)
+                             STATUS_PDF_ERRO_LEITURA, STATUS_PORTAL_OFFLINE)
+    if status_interno == ERRO and mensagem.lower().startswith("portal"):
+        return STATUS_PORTAL_OFFLINE      # portal da concessionária com erro (não é o PDF)
     return {
         CONCLUIDO:          STATUS_COMPLETE,
         FATURA_NAO_EMITIDA: STATUS_PDF_NAO_ENCONTRADO,
@@ -164,7 +166,7 @@ def _processar_uc(bot, conta: dict, resultado: RegistroResultados, caminho_plani
             _gravar_planilha(caminho_planilha, conta, r["status"], r.get("uc_nova", ""),
                              r.get("vencimento", ""), r.get("valor", ""))
             if enviar:
-                _enviar_callback(conta, _enum_status(r["status"]),
+                _enviar_callback(conta, _enum_status(r["status"], r.get("mensagem", "")),
                                  r if r["status"] == CONCLUIDO else None)
             print(f"   [UC] {r['status'].upper()} — {r.get('mensagem','')}")
             return
@@ -202,7 +204,7 @@ def _registrar_resultado(conta: dict, r: dict, resultado: RegistroResultados, en
     _gravar_planilha(caminho_planilha, conta, r["status"], r.get("uc_nova", ""),
                      r.get("vencimento", ""), r.get("valor", ""))
     if enviar:
-        _enviar_callback(conta, _enum_status(r["status"]),
+        _enviar_callback(conta, _enum_status(r["status"], r.get("mensagem", "")),
                          r if r["status"] == CONCLUIDO else None)
     print(f"   [UC] {r['status'].upper()} — {r.get('mensagem', '')}")
 

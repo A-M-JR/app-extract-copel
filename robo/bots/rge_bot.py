@@ -16,7 +16,12 @@ import time
 
 import config
 from bot_base import BotBase, primeiro_visivel
-from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA
+from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO
+
+
+class PortalComErro(Exception):
+    """A CPFL não abriu a tela de débitos/2ª via (tela de erro do portal). NÃO é 'fatura não
+    emitida' — não pode ir pro CRM como PDF_NAO_ENCONTRADO."""
 
 NAV = config.ESPERA_POS_NAVEGACAO_MS
 AJAX = config.ESPERA_POS_AJAX_MS
@@ -585,6 +590,9 @@ class RgeBot(BotBase):
             if marc.search(corpo):
                 print("   [rge] tela de débitos/2ª via carregada.")
                 return True
+            if self._pagina_erro_cpfl():
+                print("   [rge] a CPFL abriu a TELA DE ERRO no lugar da 2ª via (F5 não resolve aqui).")
+                return False
             if time.time() >= prox_reload and recarregou < 4:
                 recarregou += 1
                 print(f"   [rge] histórico não renderizou — recarregando (F5) {recarregou}/4...")
@@ -843,6 +851,30 @@ class RgeBot(BotBase):
         print("   [rge] link 'Débito e segunda via' NÃO encontrado.")
         return False
 
+    def _abrir_historico_com_recuperacao(self, conta: dict, tag: str):
+        """Abre 'Débito e segunda via' e espera a tela de débitos. Se a CPFL cair na tela de
+        erro (integracao-agd), volta pra seleção, re-seleciona a instalação e tenta de novo;
+        na 3ª tentativa sai, reloga e refaz. Não deu -> PortalComErro (vira ERRO, não
+        'não emitida')."""
+        for tentativa in range(1, 4):
+            if tentativa > 1:
+                print(f"   [rge] recuperando da tela de erro da CPFL ({tentativa}/3): "
+                      + ("saindo e logando de novo..." if tentativa == 3 else "re-selecionando a instalação..."))
+                if tentativa == 3:
+                    self._limpar_sessao_cpfl()
+                    self.garantir_login()
+                else:
+                    time.sleep(4)
+                self._ir_para_selecao_uc()
+                if not self._selecionar_instalacao(conta):
+                    raise PortalComErro("não consegui re-selecionar a instalação depois da tela de erro da CPFL")
+            if not self._abrir_debito_segunda_via():
+                self._dump(f"falha_debito_{tag}")
+                continue
+            if self._aguardar_historico():
+                return
+        raise PortalComErro("a CPFL não abriu a tela de débitos/2ª via (tela de erro do portal, 3 tentativas)")
+
     def _esperar_contas_pagas(self, timeout=40) -> bool:
         """Espera a seção 'MINHAS CONTAS PAGAS' aparecer — ela carrega DEPOIS da tabela
         de abertos (AJAX separado). Rola até o rodapé pra forçar o render e fecha o
@@ -1047,8 +1079,12 @@ class RgeBot(BotBase):
             self._dump(f"falha_selecao_{tag}")
             return {"status": NAO_ENCONTRADO, "uc_nova": "", "vencimento": "", "valor": "",
                     "arquivo": "", "mensagem": f"Instalação {uc} não localizada"}
-        if not self._abrir_debito_segunda_via():
-            self._dump(f"falha_debito_{tag}")
+        try:
+            self._abrir_historico_com_recuperacao(conta, tag)
+        except PortalComErro as e:
+            self._dump(f"falha_portal_{tag}")
+            return {"status": ERRO, "uc_nova": "", "vencimento": "", "valor": "", "arquivo": "",
+                    "mensagem": f"portal CPFL com erro: {e}"}
         r = self._baixar_fatura_mes(conta)
         if r is None:
             self._dump(f"falha_fatura_{tag}")
