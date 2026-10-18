@@ -20,6 +20,7 @@ CONCLUIDO           = "concluído"
 NAO_ENCONTRADO      = "não encontrado"
 FATURA_NAO_EMITIDA  = "fatura não emitida"
 ERRO                = "erro"
+ADIADO              = "adiado"               # não tentou: captcha bloqueado -> próximo ciclo
 
 COLUNAS = [
     "nome_cliente", "uc", "uc_nova", "mes_referencia", "vencimento", "valor",
@@ -31,6 +32,7 @@ _CORES = {
     NAO_ENCONTRADO:     "FFF2CC",  # amarelo
     FATURA_NAO_EMITIDA: "FFF2CC",  # amarelo
     ERRO:               "FFC7CE",  # vermelho
+    ADIADO:             "DDEBF7",  # azul claro
 }
 
 
@@ -121,7 +123,7 @@ class RegistroResultados:
         partes = "  |  ".join(f"{v} {k}" for k, v in contagem.items())
         print(f"  RESUMO ({total} UCs):  {partes}")
         print("=" * 60)
-        for status in (CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO):
+        for status in (CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ADIADO, ERRO):
             itens = [i for i in self.itens if i["status"] == status]
             if not itens:
                 continue

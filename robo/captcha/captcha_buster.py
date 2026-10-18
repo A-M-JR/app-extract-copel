@@ -9,6 +9,11 @@ O solver antigo (captcha_dom.py) continua no projeto — ver CAPTCHA_METODO no c
 """
 import time
 
+
+class CaptchaBloqueado(Exception):
+    """Google bloqueou o desafio ("Try again later" / consultas automáticas). Insistir piora:
+    quem chama deve PAUSAR a concessionária em vez de re-tentar o login."""
+
 # marca o botão do Buster no rodapé do desafio. Procura o #solver-button; se ele estiver
 # num shadow root fechado, marca o "host" — o único item do rodapé que NÃO é botão nativo
 # do reCAPTCHA (recarregar / áudio / imagem / ajuda).
@@ -99,8 +104,8 @@ def resolver_captcha(page, timeout_s: int = 120, espera_por_clique_s: int = 25) 
             time.sleep(0.5)
             continue
         if _bloqueado(bframe):
-            print("   [captcha] Google bloqueou o desafio ('tente mais tarde') -> desisto deste login.")
-            return False
+            print("   [captcha] Google BLOQUEOU o captcha ('Try again later') -> pausando a concessionária.")
+            raise CaptchaBloqueado("Google bloqueou o captcha (Try again later / consultas automáticas)")
         if not _clicar_buster(bframe):
             if not avisou_sem_botao:
                 print("   [captcha] botão do Buster não apareceu — a extensão está instalada "

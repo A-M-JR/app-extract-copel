@@ -157,7 +157,7 @@ def ao_fim_execucao(itens: list[dict], resumo: dict, relatorio_html: str | None)
                 alerta("captcha", "Captcha falhando",
                        f"{resumo['falha_captcha']} logins falharam no captcha ({resumo.get('concessionaria')}). "
                        "Confira se o Buster está instalado/ativo no Chrome do robô.", c)
-            if resumo["total"] >= 3 and resumo["taxa"] < float(c.get("limite_taxa", 50)):
+            if resumo.get("tentadas", resumo["total"]) >= 3 and resumo["taxa"] < float(c.get("limite_taxa", 50)):
                 alerta(f"taxa_{resumo.get('concessionaria')}", "Taxa de sucesso baixa",
                        f"{resumo.get('concessionaria')}: só {resumo['taxa']:.0f}% concluídas "
                        f"({resumo['ok']}/{resumo['total']}).", c, [relatorio_html] if relatorio_html else [])

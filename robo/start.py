@@ -9,6 +9,7 @@ Uso (via rodar.bat):
     rodar                  -> processa TODAS
     rodar 10 --sem-enviar  -> baixa mas NÃO manda pro CRM (ensaio)
 """
+import os
 import subprocess
 import sys
 import time
@@ -114,6 +115,9 @@ def main():
         del args[i:i + 2]
     silencioso = "--silencioso" in args
     args = [a for a in args if a != "--silencioso"]
+    if "--ignorar-pausa" in args:          # painel: "rodar mesmo assim?"
+        os.environ["ROBO_IGNORAR_PAUSA"] = "1"
+        args = [a for a in args if a != "--ignorar-pausa"]
     enviar = "--sem-enviar" not in args
     args = [a for a in args if a != "--sem-enviar"]
     limite = int(args[0]) if args and args[0].isdigit() else 0

@@ -12,11 +12,11 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO
+from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO, ADIADO
 
 _ROTULO = {CONCLUIDO: "Concluída", FATURA_NAO_EMITIDA: "Não emitida",
-           NAO_ENCONTRADO: "UC não encontrada", ERRO: "Erro"}
-_CLASSE = {CONCLUIDO: "ok", FATURA_NAO_EMITIDA: "av", NAO_ENCONTRADO: "av", ERRO: "erro"}
+           NAO_ENCONTRADO: "UC não encontrada", ERRO: "Erro", ADIADO: "Adiada (captcha)"}
+_CLASSE = {CONCLUIDO: "ok", FATURA_NAO_EMITIDA: "av", NAO_ENCONTRADO: "av", ERRO: "erro", ADIADO: "av"}
 
 _CSS = """
 :root{--bg:#f4f6f8;--card:#fff;--txt:#1f2937;--muted:#6b7280;--line:#e5e7eb;--accent:#2e7d32;
@@ -139,8 +139,9 @@ def render(itens: list[dict], meta: dict, log: list, xlsx: Path | None) -> str:
     total = len(itens)
     cont = Counter(i["status"] for i in itens)
     ok, nao_emit = cont.get(CONCLUIDO, 0), cont.get(FATURA_NAO_EMITIDA, 0)
-    nao_enc, erros = cont.get(NAO_ENCONTRADO, 0), cont.get(ERRO, 0)
-    taxa = (ok / total * 100) if total else 0
+    nao_enc, erros = cont.get(NAO_ENCONTRADO, 0) + cont.get(ADIADO, 0), cont.get(ERRO, 0)
+    tentadas = total - cont.get(ADIADO, 0)          # adiada (captcha bloqueado) não conta na taxa
+    taxa = (ok / tentadas * 100) if tentadas else 0
     duracoes = [i["duracao_s"] for i in itens if isinstance(i.get("duracao_s"), (int, float))]
     media = sum(duracoes) / len(duracoes) if duracoes else 0
     inicio = meta.get("inicio") or datetime.now()
@@ -151,7 +152,7 @@ def render(itens: list[dict], meta: dict, log: list, xlsx: Path | None) -> str:
         f'<span title="{_e(_ROTULO[s])}: {n}" style="width:{n / total * 100:.2f}%;'
         f'background:var(--{_CLASSE[s]})"></span>'
         for s, n in ((CONCLUIDO, ok), (FATURA_NAO_EMITIDA, nao_emit), (NAO_ENCONTRADO, nao_enc),
-                     (ERRO, erros)) if n) if total else ""
+                     (ADIADO, cont.get(ADIADO, 0)), (ERRO, erros)) if n) if total else ""
 
     # problemas (erros primeiro, depois pendências)
     probs = []

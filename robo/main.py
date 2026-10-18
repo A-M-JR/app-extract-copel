@@ -47,7 +47,7 @@ def _banner_progresso(atual: int, total: int, conta: dict | None = None):
 import _caminhos  # noqa: F401  (subpastas de robo/)
 import config
 from planilha import ler_contas, atualizar_linha
-from resultado_log import RegistroResultados, ERRO, NAO_ENCONTRADO, CONCLUIDO
+from resultado_log import RegistroResultados, ERRO, NAO_ENCONTRADO, CONCLUIDO, ADIADO
 # copel_bot (que carrega o Playwright) é importado só dentro de executar()/descobrir().
 
 
@@ -207,6 +207,37 @@ def _registrar_resultado(conta: dict, r: dict, resultado: RegistroResultados, en
     print(f"   [UC] {r['status'].upper()} — {r.get('mensagem', '')}")
 
 
+def _em_pausa(concessionaria: str) -> bool:
+    """True se a concessionária está pausada por bloqueio de captcha (e não mandaram ignorar)."""
+    from concessionarias import usa_captcha
+    if not usa_captcha(concessionaria) or os.environ.get("ROBO_IGNORAR_PAUSA") == "1":
+        return False
+    import pausa_captcha
+    fim = pausa_captcha.ate(concessionaria)
+    if not fim:
+        return False
+    print(f"\n[captcha] {concessionaria} em PAUSA até {fim:%H:%M} — o Google bloqueou o captcha e "
+          "insistir aumenta o bloqueio. As faturas continuam pendentes no CRM.")
+    print(f"RESUMO (0 UCs):  {concessionaria} em pausa até {fim:%H:%M} (captcha bloqueado pelo Google)")
+    return True
+
+
+def _pausar_por_bloqueio(concessionaria: str, motivo: str):
+    import pausa_captcha
+    fim = pausa_captcha.ativar(concessionaria, motivo=motivo)
+    print(f"   [captcha] {concessionaria} PAUSADA até {fim:%H:%M}. As faturas que faltavam ficam "
+          "pendentes (o próximo ciclo pega). Outras concessionárias seguem normais.")
+    try:
+        import notificacao
+        notificacao.alerta(f"captcha_bloqueado_{concessionaria}", f"Captcha bloqueado pelo Google ({concessionaria})",
+                           f"O Google respondeu 'Try again later' (consultas automáticas). Pausei a "
+                           f"{concessionaria} até {fim:%H:%M}; as faturas que faltavam ficam pendentes e voltam "
+                           "no próximo ciclo depois disso. Se repetir sempre, aumente a pausa entre logins.")
+    except Exception:
+        pass
+    return fim
+
+
 def _separar_problemas(faturas: list[dict]):
     """Tira da fila o que já se sabe que vai dar errado ANTES de abrir o navegador:
       - sem login/senha, sem UC ou com mês inválido -> 'invalidas' (registra o motivo, não loga)
@@ -289,6 +320,8 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
     Bot = get_bot(concessionaria)
     config.PASTA_FATURAS = config.pasta_faturas_de(concessionaria)  # faturas/<CONCESSIONARIA>
 
+    if _em_pausa(concessionaria):
+        return
     if enviar:   # primeiro, entrega o que ficou pendente de execuções anteriores
         try:
             import fila_crm
@@ -371,7 +404,16 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
                     else getattr(config, "PAUSA_ENTRE_LOGINS_S", 0))
 
     idx = 0
-    for grupo_i, ((login, senha), itens) in enumerate(grupos.items()):
+    try:
+        from captcha_buster import CaptchaBloqueado
+    except Exception:
+        class CaptchaBloqueado(Exception):
+            pass
+    lista_grupos = list(grupos.items())
+    bloqueio = None             # Google bloqueou o captcha -> para a concessionária
+    for grupo_i, ((login, senha), itens) in enumerate(lista_grupos):
+        if bloqueio is not None:
+            break
         if grupo_i > 0 and PAUSA_LOGINS > 0:
             print(f"   [pausa] {PAUSA_LOGINS}s antes do próximo login (evita rate-limit)...")
             time.sleep(PAUSA_LOGINS)
@@ -391,6 +433,12 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
                         bot.garantir_login()
                     except CRED_EXC as e:
                         credencial_ruim = e     # senha errada / cadastro -> não re-tenta
+                    except CaptchaBloqueado as e:
+                        bloqueio = e            # NÃO re-tenta: insistir aumenta o bloqueio
+                        try:
+                            bot.screenshot_erro({"uc": "login"}, "captcha_bloqueado")
+                        except Exception:
+                            pass
                     except Exception as e:
                         ultimo_erro = e         # transitório -> reabre e re-tenta
                         print(f"   [login] tentativa {tentativa}/{MAX_LOGIN} falhou: "
@@ -427,7 +475,7 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
                 ultimo_erro = e   # erro ao abrir/fechar o navegador
                 print(f"   [erro] navegador: {type(e).__name__}: {e}")
 
-            if processou or credencial_ruim is not None:
+            if processou or credencial_ruim is not None or bloqueio is not None:
                 break
             if tentativa < MAX_LOGIN:
                 # backoff CRESCENTE: o "erro inesperado" da COPEL é rate-limit/sobrecarga
@@ -436,6 +484,15 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
                 print(f"   [login] reabrindo o navegador e tentando de novo em {espera}s "
                       f"({tentativa + 1}/{MAX_LOGIN})...")
                 time.sleep(espera)
+
+        if bloqueio is not None:
+            fim = _pausar_por_bloqueio(concessionaria, str(bloqueio))
+            restantes = [c for _, its in lista_grupos[grupo_i:] for c in its]
+            for c in restantes:          # sem callback: continuam pendentes no CRM
+                idx += 1
+                resultado.registrar(c, ADIADO, inicio=inicio_login,
+                                    mensagem=f"captcha bloqueado pelo Google — tenta de novo após {fim:%H:%M}")
+            break
 
         # esgotou as tentativas sem processar -> registra a falha do grupo
         if not processou:
@@ -466,6 +523,8 @@ def executar_planilha(limite=0, concessionaria="COPEL"):
     """Rotina por PLANILHA: 1 login único (config) + contas.xlsx. Baixa os PDFs e gera
     o relatório na Área de Trabalho, e grava o resultado de volta na planilha. NÃO manda
     pro CRM (é a rotina local/standalone)."""
+    if _em_pausa(concessionaria):
+        return
     from concessionarias import get_info, get_bot
     if not get_info(concessionaria)["pronta"]:
         print(f"\n[erro] Concessionária {concessionaria} ainda não está pronta.\n")
@@ -501,7 +560,13 @@ def executar_planilha(limite=0, concessionaria="COPEL"):
                 bot.garantir_login()
             except Exception as e:
                 shot = bot.screenshot_erro({"uc": "login"}, "login")
+                bloqueado = type(e).__name__ == "CaptchaBloqueado"
+                fim = _pausar_por_bloqueio(concessionaria, str(e)) if bloqueado else None
                 for c in contas:
+                    if bloqueado:
+                        resultado.registrar(c, ADIADO, screenshot=shot, inicio=inicio_login,
+                                            mensagem=f"captcha bloqueado pelo Google — tenta de novo após {fim:%H:%M}")
+                        continue
                     resultado.registrar(c, ERRO, mensagem=f"login: {type(e).__name__}: {e}",
                                         screenshot=shot, inicio=inicio_login)
                     _gravar_planilha(caminho_planilha, c, ERRO)

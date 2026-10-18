@@ -140,6 +140,8 @@ PAUSA_ENTRE_LOGINS_S = 0       # pausa entre logins (concessionária SEM captcha
 # concessionária COM captcha (COPEL) sofre rate-limit ("Ocorreu um erro inesperado. Tente
 # novamente mais tarde!!") ao logar muitas vezes seguidas do mesmo IP -> espaça os logins.
 PAUSA_ENTRE_LOGINS_CAPTCHA_S = 10
+# Google bloqueou o captcha ("Try again later") -> pausa a concessionária por X minutos
+PAUSA_CAPTCHA_BLOQUEADO_MIN  = 45
 TIMEOUT_MS        = 45_000    # espera padrão por elementos (45s)
 # Tempo esperando o login concluir. No AUTOMÁTICO o solver de captcha já tem orçamento
 # próprio (~240s) e roda antes desta espera -> 90s bastam (e o retry de login em erro
@@ -234,7 +236,7 @@ LIMPEZA_DIAS = {
 AJUSTAVEIS_PAINEL = (
     "MODO_NAVEGADOR", "CAPTCHA_AUTO", "CAPTCHA_METODO", "CAPTCHA_BUSTER_TIMEOUT_S",
     "PAUSA_ENTRE_LOGINS_CAPTCHA_S", "PAUSA_ENTRE_LOGINS_S",
-    "MAX_TENTATIVAS_LOGIN", "PAUSA_RETRY_LOGIN_S", "MAX_TENTATIVAS",
+    "MAX_TENTATIVAS_LOGIN", "PAUSA_RETRY_LOGIN_S", "MAX_TENTATIVAS", "PAUSA_CAPTCHA_BLOQUEADO_MIN",
     "CONTINUO_INTERVALO_MIN", "CONTINUO_HORA_INICIO", "CONTINUO_HORA_FIM",
     "CONTINUO_CONCESSIONARIAS",
 )

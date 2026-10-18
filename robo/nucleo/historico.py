@@ -50,10 +50,11 @@ def podar() -> None:
 
 def resumo_execucao(itens: list[dict], meta: dict, relatorio: str = "") -> dict:
     """Monta a entrada do histórico a partir dos itens do RegistroResultados."""
-    from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO
+    from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO, ADIADO
     total = len(itens)
     ok = sum(1 for i in itens if i["status"] == CONCLUIDO)
-    pend = sum(1 for i in itens if i["status"] in (NAO_ENCONTRADO, FATURA_NAO_EMITIDA))
+    pend = sum(1 for i in itens if i["status"] in (NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ADIADO))
+    adiadas = sum(1 for i in itens if i["status"] == ADIADO)
     erros = sum(1 for i in itens if i["status"] == ERRO)
     captcha = sum(1 for i in itens if i["status"] == ERRO and "captcha" in (i.get("mensagem") or "").lower())
     falha_login = sum(1 for i in itens if i["status"] == ERRO and "login" in (i.get("mensagem") or "").lower())
@@ -62,8 +63,10 @@ def resumo_execucao(itens: list[dict], meta: dict, relatorio: str = "") -> dict:
     return {
         "concessionaria": meta.get("concessionaria", ""), "fonte": meta.get("fonte", ""),
         "continuo": bool(meta.get("continuo")), "total": total, "ok": ok, "pendencias": pend,
-        "erros": erros, "falha_captcha": captcha, "falha_login": falha_login, "crm_falha": crm_falha,
-        "taxa": round(ok / total * 100, 1) if total else 0.0,
+        "erros": erros, "adiadas": adiadas, "falha_captcha": captcha, "falha_login": falha_login, "crm_falha": crm_falha,
+        # taxa só sobre o que foi TENTADO (adiada por captcha bloqueado não conta como falha)
+        "taxa": round(ok / (total - adiadas) * 100, 1) if total - adiadas else 0.0,
+        "tentadas": total - adiadas,
         "duracao_s": round((datetime.now() - inicio).total_seconds()),
         "relatorio": relatorio,
     }

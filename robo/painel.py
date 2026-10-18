@@ -391,17 +391,18 @@ class Painel(tk.Tk):
             ("TENTATIVAS DE LOGIN",            "MAX_TENTATIVAS_LOGIN"),
             ("PAUSA ENTRE TENTATIVAS (s)",     "PAUSA_RETRY_LOGIN_S"),
             ("TENTATIVAS POR FATURA",          "MAX_TENTATIVAS"),
+            ("PAUSA SE O GOOGLE BLOQUEAR (min)", "PAUSA_CAPTCHA_BLOQUEADO_MIN"),
         ]):
             campo(5 + (i // 3) * 2, i % 3, rot, chave)
 
-        secao(9, "Modo 24/7")
-        campo(11, 0, "CONSULTAR O CRM A CADA (min)", "CONTINUO_INTERVALO_MIN")
-        campo(11, 1, "FUNCIONA DAS (h)",             "CONTINUO_HORA_INICIO")
-        campo(11, 2, "ATÉ AS (h) · 24 = dia todo",   "CONTINUO_HORA_FIM")
+        secao(11, "Modo 24/7")
+        campo(13, 0, "CONSULTAR O CRM A CADA (min)", "CONTINUO_INTERVALO_MIN")
+        campo(13, 1, "FUNCIONA DAS (h)",             "CONTINUO_HORA_INICIO")
+        campo(13, 2, "ATÉ AS (h) · 24 = dia todo",   "CONTINUO_HORA_FIM")
         ttk.Label(f, text="CONCESSIONÁRIAS A CADA CICLO", style="Field.TLabel").grid(
-            row=13, column=0, columnspan=3, sticky="w", pady=(0, 5))
+            row=15, column=0, columnspan=3, sticky="w", pady=(0, 5))
         cf = ttk.Frame(f, style="Card.TFrame")
-        cf.grid(row=14, column=0, columnspan=3, sticky="w", pady=(0, 14))
+        cf.grid(row=16, column=0, columnspan=3, sticky="w", pady=(0, 14))
         ativas = set(getattr(config, "CONTINUO_CONCESSIONARIAS", ["COPEL"]))
         self.conc_24h_vars = {}
         for nome, info in CONCESSIONARIAS.items():
@@ -677,6 +678,19 @@ class Painel(tk.Tk):
         fonte = self.modo_var.get()
         limite = (self.limite_var.get() or "0").strip()
         cmd = [sys.executable, "-u", str(ROBO / "start.py"), fonte, limite, "--conc", conc, "--silencioso"]
+        try:
+            import pausa_captcha
+            fim = pausa_captcha.ate(conc)
+        except Exception:
+            fim = None
+        if fim:
+            if not messagebox.askyesno(
+                    "Captcha bloqueado",
+                    f"A {conc} está em pausa até {fim:%H:%M} porque o Google bloqueou o captcha "
+                    "(\"Try again later\").\n\nInsistir agora costuma AUMENTAR o bloqueio.\n\n"
+                    "Rodar mesmo assim?", icon="warning", default="no"):
+                return
+            cmd.append("--ignorar-pausa")
         if fonte == "api" and self.sem_enviar.get():
             cmd.append("--sem-enviar")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

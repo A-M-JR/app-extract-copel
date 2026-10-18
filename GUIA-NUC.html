@@ -133,6 +133,10 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}
         seu navegador.</li>
       <li><b>Fila de reenvio</b>: se o CRM não aceitar um resultado (fora do ar, timeout), ele fica guardado com o PDF e
         é reenviado no começo da próxima execução. Nada se perde.</li>
+      <li><b>Captcha bloqueado pelo Google</b> ("Try again later"): o robô <b>para a COPEL por 45 min</b>
+        (ajustável em Configurações), não re-tenta o login, deixa as faturas que faltavam pendentes (sem marcar
+        erro no CRM) e manda um alerta por e-mail. RGE e CELESC seguem normais. Rodando pelo painel durante a
+        pausa, ele avisa e pergunta se quer insistir.</li>
       <li><b>Sem insistir</b> em quem acabou de falhar: senha errada e fatura entregue esperam 24h, fatura não emitida
         6h, cadastro inválido 12h, demais erros 1h.</li>
     </ul>
