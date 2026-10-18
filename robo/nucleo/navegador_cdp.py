@@ -50,10 +50,35 @@ def _achar_chrome() -> str:
     raise FileNotFoundError("Não achei o chrome.exe. Defina CHROME_EXE no config.py.")
 
 
+_PASTAS_IA = ("OptGuideOnDeviceModel", "optimization_guide_model_store")
+
+
+def _bloquear_modelo_ia(perfil: Path):
+    """O Chrome baixa sozinho um modelo de IA local (Gemini Nano, ~4 GB) que o robô não usa,
+    e a flag --disable-features não segura sempre. Trava: apaga a pasta e cria no lugar um
+    ARQUIVO somente-leitura com o mesmo nome -> o Chrome não consegue recriar a pasta e não
+    baixa. Roda a cada abertura (com o Chrome do robô fechado)."""
+    import shutil
+    import stat
+    for nome in _PASTAS_IA:
+        p = perfil / nome
+        try:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                print(f"[chrome] removido {nome} (modelo de IA do Chrome, não usado pelo robô)")
+            if not p.exists():
+                perfil.mkdir(parents=True, exist_ok=True)
+                p.write_text("bloqueado pelo robô: não baixar o modelo de IA do Chrome\n", encoding="utf-8")
+                p.chmod(stat.S_IREAD)
+        except Exception as e:
+            print(f"[chrome] aviso: não consegui bloquear {nome}: {e}")
+
+
 def _preparar_perfil(perfil: Path):
-    """1ª vez: desliga o gerenciador de senhas (popups 'Salvar senha?' / 'senha vazada'
-    travam a automação). Só escreve se o perfil ainda não existe (não pisa nas configs
-    das extensões depois)."""
+    """Bloqueia o modelo de IA do Chrome e, na 1ª vez, desliga o gerenciador de senhas
+    (popups 'Salvar senha?' / 'senha vazada' travam a automação). As Preferences só são
+    escritas se o perfil ainda não existe (não pisa nas configs das extensões depois)."""
+    _bloquear_modelo_ia(perfil)
     prefs = perfil / "Default" / "Preferences"
     if prefs.exists():
         return
@@ -80,7 +105,8 @@ def garantir_chrome(url_inicial: str = "") -> None:
             # sem gerenciador de senhas e sem o modelo de IA local do Chrome (~4 GB, inútil aqui)
             "--disable-features=PasswordLeakDetection,PasswordManagerOnboarding,"
             "OptimizationGuideModelDownloading,OptimizationHintsFetching,"
-            "OptimizationTargetPrediction,OptimizationHints",
+            "OptimizationTargetPrediction,OptimizationHints,OptimizationGuideOnDeviceModel,"
+            "OnDeviceModelPerformanceParams,AIPromptAPI,AISummarizationAPI,AIWriterAPI,AIRewriterAPI",
             "--disable-save-password-bubble"]
     if url_inicial:
         args.append(url_inicial)

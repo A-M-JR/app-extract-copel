@@ -19,8 +19,8 @@ _INTERVALO_H = 6
 
 # caches do Chrome do robô que podem ser apagados (ele recria). O maior é o modelo de IA
 # local do Chrome (OptGuideOnDeviceModel, ~4 GB), que o robô não usa.
-_CACHES_CHROME = (
-    "OptGuideOnDeviceModel", "optimization_guide_model_store", "component_crx_cache",
+_CACHES_CHROME = (   # (o modelo de IA é bloqueado no navegador_cdp; aqui só se escapar)
+    "component_crx_cache",
     "GrShaderCache", "ShaderCache", "GraphiteDawnCache",
     "Default/Cache", "Default/Code Cache", "Default/GPUCache", "Default/DawnGraphiteCache",
     "Default/DawnWebGPUCache",
@@ -96,6 +96,10 @@ def limpar(forcar: bool = False, verbose: bool = False) -> int:
             aberto = True
         perfil = Path(config.PERFIL_CHROME_CDP)
         if not aberto and perfil.exists():
+            try:                       # modelo de IA do Chrome (~4 GB): apaga e trava
+                navegador_cdp._bloquear_modelo_ia(perfil)
+            except Exception:
+                pass
             for rel in _CACHES_CHROME:
                 p = perfil / rel
                 if p.exists():
