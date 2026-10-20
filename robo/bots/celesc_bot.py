@@ -11,9 +11,12 @@ A navegação (achar a UC -> 2ª via -> baixar o PDF) ainda NÃO está mapeada �
 processar_uc/processar_faturas_uc são stubs que dumpam o DOM pra a gente montar a receita
 (rode `celesc_descobrir.py`). A COPEL segue BLINDADA (não herda esta base).
 """
+import os
 import re
+import shutil
 import time
 import unicodedata
+from pathlib import Path
 
 import config
 from bot_base import BotBase, CredencialInvalida, primeiro_visivel
@@ -311,6 +314,101 @@ class CelescBot(BotBase):
         self._aguardar_carregamento(config.ESPERA_POS_NAVEGACAO_MS)
         return r.get("bi", -1) >= 0
 
+    # -- seleção de PERFIL (tela nova: 'qual perfil de usuário?' Consumidor/Grupo A) ----
+    def _na_selecao_perfil(self) -> bool:
+        """True na tela 'Deseja acessar a sua conta a partir de qual perfil de usuário?' (cards
+        'Consumidor' e 'Grupo A', cada um com botão 'Selecionar'). Só aparece quando o login tem
+        2+ perfis; com 1 só, o portal pula direto. Vem LOGO APÓS o login, antes do imóvel."""
+        try:
+            return self.page.get_by_text(re.compile(
+                r"perfil\s+de\s+usu[áa]rio", re.I)).count() > 0
+        except Exception:
+            return False
+
+    def _selecionar_perfil(self, preferido: str = "grupo a") -> bool:
+        """Clica 'Selecionar' no card do perfil PREFERIDO (padrão 'Grupo A'). O botão é só
+        'Selecionar' (o do imóvel é 'Selecionar unidade'). Sem casar o preferido -> pega o 1º."""
+        fim = time.time() + 20
+        while time.time() < fim:
+            try:
+                if self.page.get_by_role("button", name=re.compile(r"^\s*selecionar\s*$", re.I)).count() > 0:
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        js = r"""
+        (pref) => {
+          const norm = s => (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+          const cand = [...document.querySelectorAll('button,a,[role=button]')]
+            .filter(b => norm(b.innerText).replace(/\s+/g,' ').trim() === 'selecionar');
+          let bi = -1;
+          cand.forEach((b,i) => {
+            let el=b, card=b;
+            for (let k=0;k<7 && el;k++){ el=el.parentElement; if(el && (el.innerText||'').length>15) card=el; }
+            if (norm(card.innerText).includes(pref)) bi = i;
+          });
+          if (bi < 0 && cand.length) bi = 0;   // fallback: 1º perfil (evita travar)
+          if (bi >= 0) { cand[bi].scrollIntoView({block:'center'}); cand[bi].click(); }
+          return { bi, count: cand.length };
+        }
+        """
+        try:
+            r = self.page.evaluate(js, preferido)
+        except Exception:
+            r = {"bi": -1, "count": 0}
+        print(f"   [celesc] seleção de perfil: {r.get('count')} opção(ões), "
+              f"escolhido idx={r.get('bi')} (preferido='{preferido}')")
+        self._aguardar_carregamento(config.ESPERA_POS_NAVEGACAO_MS)
+        return r.get("bi", -1) >= 0
+
+    # -- busca de imóvel pela UC (campo 'Endereço, apelido ou UC') --------------
+    def _numero_busca(self, conta: dict) -> str:
+        """Número pra digitar na busca do seletor: prefere o NOVO (uc_aneel_api — é o que o
+        portal mostra), cai no antigo (uc). Só dígitos."""
+        novo = re.sub(r"\D", "", str(conta.get("uc_aneel_api") or ""))
+        antigo = re.sub(r"\D", "", str(conta.get("uc") or ""))
+        return novo or antigo
+
+    def _campo_busca_imovel(self):
+        return primeiro_visivel([
+            self.page.get_by_placeholder(re.compile(r"endere[çc]o,?\s*apelido\s*ou\s*uc", re.I)),
+            self.page.get_by_placeholder(re.compile(r"apelido\s*ou\s*uc|buscar|pesquis", re.I)),
+            self.page.locator("input[type='search']"),
+        ], timeout_ms=6000)
+
+    def _filtrar_por_uc(self, numero: str):
+        """Digita a UC no campo de busca pra filtrar a lista de imóveis (jeito recomendado no
+        portal novo). Deixa o Angular reduzir a lista a 1 card quando o número bate."""
+        campo = self._campo_busca_imovel()
+        if not campo:
+            print("   [celesc] campo de busca de imóvel não encontrado — vou casar por endereço.")
+            return
+        try:
+            campo.click()
+            campo.fill("")
+            campo.fill(numero)
+            # cutuca o filtro do Angular (alguns só reagem a keydown/keyup)
+            self.page.keyboard.press("End")
+        except Exception:
+            try:
+                campo.type(numero, delay=40)
+            except Exception:
+                pass
+        rx = re.compile(r"selecionar\s+unidade", re.I)
+        alvo = time.time() + 12
+        while time.time() < alvo:
+            try:
+                if self.page.get_by_role("button", name=rx).count() == 1:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.6)
+        try:
+            n = self.page.get_by_role("button", name=rx).count()
+        except Exception:
+            n = -1
+        print(f"   [celesc] busca por UC '{numero}': {n} card(s).")
+
     def _na_selecao_imovel(self) -> bool:
         """True se estamos na tela 'Você deseja acessar ... qual imóvel?' (cards + 'Selecionar
         unidade') — a CELESC mostra isso LOGO APÓS o login quando há 2+ imóveis."""
@@ -328,11 +426,17 @@ class CelescBot(BotBase):
         if self._na_selecao_imovel():
             self._selecionar_card_imovel(conta)   # login caiu direto na seleção (multi-imóvel)
             return
-        if not toks:
-            return  # sem endereço -> usa o exibido
+        numero = self._numero_busca(conta)
         topo = self._texto_topo_imovel()
+        topo_dig = re.sub(r"\D", "", topo)
+        if numero and numero in topo_dig:
+            return  # já é o imóvel certo (a UC bate no topo)
+        if not toks:
+            if numero and topo_dig:      # tem UC e um imóvel exibido que NÃO bate -> troca
+                self._trocar_imovel(conta)
+            return                       # sem endereço e sem UC -> usa o exibido
         if topo and all(t in topo for t in toks):
-            return  # já é o imóvel certo
+            return  # já é o imóvel certo (endereço bate)
         self._trocar_imovel(conta)
 
     def _trocar_imovel(self, conta: dict) -> bool:
@@ -354,15 +458,21 @@ class CelescBot(BotBase):
         + endereço completo, não o antigo da API -> casa por endereço; desempata ap/cx/número)
         e clica 'Selecionar unidade' do melhor. Se nada casar, pega o 1º (evita travar)."""
         toks = self._tokens_chave(conta)
-        # espera os cards renderizarem
+        # espera a tela do seletor renderizar (os cards OU pelo menos o campo de busca)
         fim = time.time() + 30
         while time.time() < fim:
             try:
-                if self.page.get_by_role("button", name=re.compile(r"selecionar\s+unidade", re.I)).count() > 0:
+                if (self.page.get_by_role("button", name=re.compile(r"selecionar\s+unidade", re.I)).count() > 0
+                        or self._campo_busca_imovel()):
                     break
             except Exception:
                 pass
             time.sleep(1)
+        # 1) FILTRA pela UC (nova de preferência) — reduz a lista a 1 card quando o número bate
+        numero = self._numero_busca(conta)
+        if numero:
+            self._filtrar_por_uc(numero)
+        # 2) escolhe o card: pontua por endereço; com 1 card filtrado, score 0 já pega ele (idx 0)
         js = """
         (toks) => {
           const btns = [...document.querySelectorAll('button,[role=button]')]
@@ -582,55 +692,170 @@ class CelescBot(BotBase):
         return None
 
     def _clicar_e_pegar_pdf(self, loc, conta: dict, timeout_s: int | None = None) -> str:
-        """Clica e espera o PDF chegar de qualquer jeito que o portal mande: DOWNLOAD direto
-        ou NOVA ABA com o PDF (url http ou blob:). Devolve o caminho salvo ('' se não veio)."""
+        """Clica e espera o PDF chegar de QUALQUER jeito que o portal mande:
+          (a) DOWNLOAD direto (evento do Playwright),
+          (b) NOVA ABA com o PDF (url http ou blob:),
+          (c) RESPOSTA DA REDE application/pdf — a fatura ABERTA busca o boleto por fetch/XHR,
+              monta um blob e salva; isso NÃO dispara download nem abre aba, então a única
+              forma de pegar é lendo a resposta HTTP do PDF.
+        Devolve o caminho salvo ('' se não veio)."""
         timeout_s = timeout_s or config.TIMEOUT_MS / 1000
-        downloads, abas = [], []
+        downloads, abas, respostas = [], [], []
 
         def on_dl(d):          # (o Playwright não aceita list.append direto como handler)
             downloads.append(d)
 
+        def on_resp(resp):     # captura o PDF que vem por fetch/XHR (fatura aberta)
+            try:
+                u = (resp.url or "").lower()
+                ct = (resp.headers.get("content-type") or "").lower()
+                pista_url = ("2via" in u or "segunda" in u or "boleto" in u or "fatura" in u)
+                parece_pdf = "pdf" in ct or "octet-stream" in ct or u.endswith(".pdf") or pista_url
+                nao_pdf = any(x in ct for x in ("json", "html", "javascript", "css", "image", "font"))
+                if parece_pdf and not nao_pdf:
+                    corpo = resp.body()   # p/ download real o Playwright bloqueia isto -> except
+                    if corpo[:5] == b"%PDF-":
+                        respostas.append(corpo)
+            except Exception:
+                pass
+
         def on_aba(nova):
             abas.append(nova)
             nova.on("download", on_dl)
+            nova.on("response", on_resp)
+
+        # (d) o boleto da fatura ABERTA é salvo NATIVAMENTE pelo Chrome (fora do Playwright):
+        # força o download, via CDP, pra uma pasta nossa e pega o arquivo de lá.
+        pasta_dl = Path(config.PASTA_DADOS) / "downloads_celesc"
+        try:
+            pasta_dl.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        antes = set(os.listdir(pasta_dl)) if pasta_dl.exists() else set()
+        self._forcar_download_cdp(str(pasta_dl))
 
         self.page.on("download", on_dl)
+        self.page.on("response", on_resp)
         self.context.on("page", on_aba)
         try:
             self._clicar_pw(loc)
             fim = time.time() + timeout_s
             while time.time() < fim:
                 if downloads:
+                    print("   [celesc] download capturado pelo Playwright — salvando...")
                     return self._salvar_download(downloads[0], conta)
+                if respostas:
+                    print("   [celesc] PDF capturado da REDE (fetch/XHR) — salvando...")
+                    return self._salvar_bytes(respostas[0], conta)
                 for aba in abas:
                     dados = self._pdf_da_aba(aba)
                     if dados:
+                        print(f"   [celesc] PDF veio em ABA NOVA ({aba.url[:80]}) — salvando...")
                         try:
                             aba.close()
                         except Exception:
                             pass
                         return self._salvar_bytes(dados, conta)
+                arq = self._pdf_novo_na_pasta(pasta_dl, antes)   # (d) Chrome salvou na pasta
+                if arq:
+                    print("   [celesc] PDF salvo pelo Chrome na pasta (CDP) — movendo...")
+                    return self._salvar_arquivo_baixado(arq, conta)
                 time.sleep(0.5)
+            # timeout: diz EXATAMENTE o que apareceu (pra diagnosticar o "ficou parado")
+            urls_abas = []
+            for aba in abas:
+                try:
+                    urls_abas.append(aba.url or "about:blank")
+                except Exception:
+                    urls_abas.append("(aba fechada)")
+            try:
+                sobrou = list(set(os.listdir(pasta_dl)) - antes)
+            except Exception:
+                sobrou = []
+            print(f"   [celesc] TIMEOUT {timeout_s:.0f}s esperando o PDF: "
+                  f"downloads={len(downloads)}, respostas_pdf={len(respostas)}, "
+                  f"abas_novas={len(abas)} {urls_abas}, pasta_dl={sobrou}")
             return ""
         finally:
-            for alvo, ev, fn in ((self.page, "download", on_dl), (self.context, "page", on_aba)):
+            for alvo, ev, fn in ((self.page, "download", on_dl), (self.page, "response", on_resp),
+                                 (self.context, "page", on_aba)):
                 try:
                     alvo.remove_listener(ev, fn)
                 except Exception:
                     pass
 
+    def _forcar_download_cdp(self, pasta: str):
+        """Diz ao Chrome (via CDP) pra SALVAR os downloads em `pasta` em vez de deixar o
+        Playwright interceptar — resolve o boleto da fatura aberta, que o Chrome baixa
+        nativamente (o evento 'download' do Playwright não dispara)."""
+        try:
+            cdp = self.context.new_cdp_session(self.page)
+        except Exception as e:
+            print(f"   [celesc] (aviso) não abri sessão CDP p/ download: {type(e).__name__}: {e}")
+            return
+        for metodo in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
+            try:
+                cdp.send(metodo, {"behavior": "allow", "downloadPath": pasta, "eventsEnabled": True})
+                return
+            except Exception:
+                try:   # algumas versões não aceitam eventsEnabled
+                    cdp.send(metodo, {"behavior": "allow", "downloadPath": pasta})
+                    return
+                except Exception:
+                    continue
+
+    def _pdf_novo_na_pasta(self, pasta: Path, antes: set) -> Path | None:
+        """Devolve o PDF NOVO e COMPLETO que o Chrome salvou em `pasta` (ignora .crdownload
+        ainda baixando). None se ainda não chegou um PDF inteiro."""
+        try:
+            novos = set(os.listdir(pasta)) - antes
+        except Exception:
+            return None
+        for nome in novos:
+            if nome.endswith(".crdownload") or nome.endswith(".tmp"):
+                continue   # ainda baixando
+            p = pasta / nome
+            try:
+                if p.stat().st_size > 800 and p.read_bytes()[:5] == b"%PDF-":
+                    return p
+            except Exception:
+                continue
+        return None
+
+    def _salvar_arquivo_baixado(self, origem: Path, conta: dict) -> str:
+        base = config.sanitizar(conta.get("nome_cliente") or conta.get("uc") or "fatura")
+        destino = config.PASTA_FATURAS / f"{base}_{config.sanitizar(conta['mes_referencia'])}.pdf"
+        try:
+            config.PASTA_FATURAS.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(origem), str(destino))
+            print(f"   [pdf] Salvo: {destino}")
+            return str(destino)
+        except Exception as e:
+            print(f"   [celesc] falha ao mover o PDF baixado: {type(e).__name__}: {e}")
+            return ""
+
     def _pdf_da_aba(self, aba) -> bytes:
-        """Bytes do PDF aberto numa aba nova (http ou blob:). b'' se ainda não deu."""
+        """Bytes do PDF aberto numa aba nova (http ou blob:). b'' se ainda não deu.
+        Busca PRIMEIRO de dentro da aba (fetch no contexto autenticado — pega o boleto da
+        fatura aberta, que às vezes exige a sessão completa, não só os cookies). Fallback:
+        context.request (cookies do context)."""
         try:
             url = aba.url or ""
             if not url or url == "about:blank":
                 return b""
-            if url.startswith("blob:"):
-                nums = aba.evaluate("async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", url)
+            try:   # 1) fetch DENTRO da aba (sessão/credenciais completas) — blob: e http
+                nums = aba.evaluate(
+                    "async u => Array.from(new Uint8Array(await (await fetch(u)).arrayBuffer()))", url)
                 dados = bytes(nums)
-            else:
+                if dados[:5] == b"%PDF-":
+                    return dados
+            except Exception:
+                pass
+            if not url.startswith("blob:"):   # 2) fallback: cookies do context
                 dados = self.context.request.get(url).body()
-            return dados if dados[:5] == b"%PDF-" else b""
+                if dados[:5] == b"%PDF-":
+                    return dados
+            return b""
         except Exception:
             return b""
 
@@ -746,8 +971,12 @@ class CelescBot(BotBase):
         from resultado_log import CONCLUIDO, NAO_ENCONTRADO, FATURA_NAO_EMITIDA, ERRO
         uc = conta.get("uc", "")
         # o login pode encadear telas antes do dashboard:
+        #   0) 'qual perfil de usuário?' (Consumidor vs Grupo A) -> sempre Grupo A
         #   1) 'escolha um parceiro de negócio' (CPF pessoal vs CNPJ do negócio) -> casa por cnpj
-        #   2) 'qual imóvel?' (2+ imóveis do parceiro) -> casa por endereço
+        #   2) 'qual imóvel?' (2+ imóveis do parceiro) -> busca pela UC nova (fallback: endereço)
+        if self._na_selecao_perfil():
+            print("   [celesc] tela de perfil de usuário — selecionando 'Grupo A'...")
+            self._selecionar_perfil("grupo a")
         if self._na_selecao_parceiro():
             print("   [celesc] login com múltiplos parceiros — escolhendo pelo CPF/CNPJ...")
             self._selecionar_parceiro(conta)

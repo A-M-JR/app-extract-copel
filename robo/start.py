@@ -120,6 +120,8 @@ def main():
         args = [a for a in args if a != "--ignorar-pausa"]
     enviar = "--sem-enviar" not in args
     args = [a for a in args if a != "--sem-enviar"]
+    incluir_usinas = "--sem-usinas" not in args
+    args = [a for a in args if a != "--sem-usinas"]
     limite = int(args[0]) if args and args[0].isdigit() else 0
     _trava = _travar_execucao(conc)   # mantém a referência viva até o fim
 
@@ -139,7 +141,8 @@ def main():
         executar_planilha(limite=limite, concessionaria=conc)
     else:
         from main import executar
-        executar(headless=False, limite=limite, enviar=enviar, concessionaria=conc)
+        executar(headless=False, limite=limite, enviar=enviar, concessionaria=conc,
+                 incluir_usinas=incluir_usinas)
 
 
 if __name__ == "__main__":

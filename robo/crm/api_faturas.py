@@ -80,12 +80,19 @@ def _base_url() -> str:
     return base.rstrip("/")
 
 
-def buscar_faturas(alias: str | None = None, timeout: int | None = None) -> list[dict]:
-    """Chama a API e devolve a lista de faturas a processar (já filtrada por concessionária)."""
+def buscar_faturas(alias: str | None = None, timeout: int | None = None,
+                   rota: str | None = None, fonte: str = "FATURA",
+                   gravar: bool = True) -> list[dict]:
+    """Chama a API e devolve a lista de faturas a processar (já filtrada por concessionária).
+
+    `rota`/`fonte` permitem reaproveitar a mesma função para a fila de USINAS
+    (GET /api/v1/farms/readings) — o corpo de resposta é o mesmo, só muda a URL.
+    `gravar=False` não sobrescreve o relatório consulta_crm (usinas não mexe no de títulos)."""
     alias = getattr(config, "CONCESSIONARIA_ALIAS", None) if alias is None else alias
     timeout = getattr(config, "API_TIMEOUT_S", 30) if timeout is None else timeout
+    rota = rota or getattr(config, "API_ROTA_PREPARACAO", "/api/v1/invoices/preparation")
 
-    url = _base_url() + getattr(config, "API_ROTA_PREPARACAO", "/api/v1/invoices/preparation")
+    url = _base_url() + rota
     headers = {"Authorization": f"Bearer {_token()}", "Accept": "application/json"}
 
     t0 = time.time()
@@ -109,12 +116,22 @@ def buscar_faturas(alias: str | None = None, timeout: int | None = None) -> list
         al = str(it.get("concessionaria_alias") or "").strip()
         if alias and al.upper() != str(alias).upper():
             continue
-        contas.append(_mapear(it))
-    try:
-        gravar_consulta(url, alias, resp.status_code, duracao, itens, contas)
-    except Exception as e:
-        print(f"[api] aviso: não gravei o consulta_crm.txt ({e})")
+        contas.append(_mapear(it, fonte=fonte))
+    if gravar:
+        try:
+            gravar_consulta(url, alias, resp.status_code, duracao, itens, contas)
+        except Exception as e:
+            print(f"[api] aviso: não gravei o consulta_crm.txt ({e})")
     return contas
+
+
+def buscar_usinas(alias: str | None = None, timeout: int | None = None) -> list[dict]:
+    """Fila de leitura das USINAS (GET /api/v1/farms/readings). Mesmo formato de conta
+    que buscar_faturas, só que cada conta vem marcada com fonte='USINA' (define a rota
+    do POST no callback e diferencia no log). Não mexe no relatório consulta_crm."""
+    return buscar_faturas(alias=alias, timeout=timeout,
+                          rota=getattr(config, "API_ROTA_USINAS", "/api/v1/farms/readings"),
+                          fonte="USINA", gravar=False)
 
 
 def gravar_consulta(url, alias, http_status, duracao_s, itens, contas) -> None:
@@ -123,7 +140,7 @@ def gravar_consulta(url, alias, http_status, duracao_s, itens, contas) -> None:
     relatorio_crm.gravar(url, alias, http_status, duracao_s, itens, contas)
 
 
-def _mapear(it: dict) -> dict:
+def _mapear(it: dict, fonte: str = "FATURA") -> dict:
     """Converte um item da API no dicionário 'conta' usado pelo robô."""
     uc = str(it.get("unidade_consumidora") or "").strip()
     uc_aneel_api = str(it.get("uc_secondary") or it.get("uc_aneel") or "").strip()
@@ -148,6 +165,7 @@ def _mapear(it: dict) -> dict:
 
     return {
         "id_fatura":     it.get("id_fatura"),
+        "fonte":         str(it.get("tipo") or fonte or "FATURA").strip().upper(),  # FATURA | USINA
         "login":         str(it.get("login") or "").strip(),
         "senha":         str(it.get("senha") or "").strip(),
         "concessionaria": it.get("concessionaria_alias"),
@@ -198,13 +216,16 @@ def montar_item_resultado(id_fatura, status_leitura: str, dados: dict | None = N
     return item
 
 
-def enviar_resultados(itens: list[dict], timeout: int | None = None) -> dict:
-    """POST dos resultados. Retorna o JSON da API (data.resultados[])."""
+def enviar_resultados(itens: list[dict], timeout: int | None = None,
+                      rota: str | None = None) -> dict:
+    """POST dos resultados. Retorna o JSON da API (data.resultados[]).
+
+    `rota` permite postar na fila de USINAS (/api/v1/farms/readings); default = títulos."""
     if not itens:
         return {"success": True, "data": {"resultados": []}}
     timeout = getattr(config, "API_TIMEOUT_S", 60) if timeout is None else timeout
-    url = _base_url() + getattr(config, "API_ROTA_READINGS",
-                                "/api/v1/invoices/preparation/readings")
+    url = _base_url() + (rota or getattr(config, "API_ROTA_READINGS",
+                                         "/api/v1/invoices/preparation/readings"))
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",

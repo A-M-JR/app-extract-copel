@@ -94,11 +94,17 @@ def _enum_status(status_interno: str, mensagem: str = "") -> str:
 
 
 def _enviar_callback(conta: dict, status_enum: str, r: dict | None = None):
-    """Devolve o resultado de uma fatura pra API (POST). Nunca derruba o lote."""
-    from api_faturas import montar_item_resultado, enviar_resultados, STATUS_COMPLETE
+    """Devolve o resultado de uma fatura pra API (POST). Nunca derruba o lote.
+
+    USINA vai pro mesmo corpo/enum, só muda a rota do POST (farms/readings)."""
+    from api_faturas import (montar_item_resultado, enviar_resultados,
+                             STATUS_COMPLETE, STATUS_DADOS_INCOMPLETOS)
     id_fatura = conta.get("id_fatura")
     if id_fatura is None:
         return
+    usina = str(conta.get("fonte") or "").upper() == "USINA"
+    rota = getattr(config, "API_ROTA_USINAS", None) if usina else None
+    tag = "callback/usina" if usina else "callback"
     try:
         import memoria_tentativas
         memoria_tentativas.registrar(id_fatura, status_enum)
@@ -118,32 +124,54 @@ def _enviar_callback(conta: dict, status_enum: str, r: dict | None = None):
             }
             # extrai do PDF os demais campos (nota_fiscal, leituras, kWh, saldo)
             if pdf:
+                _rot = (f"id={id_fatura} | {conta.get('nome_cliente', '?')} | "
+                        f"UC {conta.get('uc', '?')} | {conta.get('concessionaria', '?')}")
                 try:
                     from fatura_pdf import extrair_dados
                     for k, v in extrair_dados(pdf).items():
                         if v:
                             dados[k] = v
+                    # PDF abriu, mas pode ter faltado campo (o CRM REJEITA um COMPLETE incompleto)
+                    _obrig = ("nota_fiscal", "data_vencimento", "valor_total", "leitura_anterior",
+                              "leitura_atual", "proxima_leitura", "kwh_total_consumo")
+                    _faltam = [k for k in _obrig if not dados.get(k)]
+                    if _faltam:
+                        print(f"   [callback] AVISO: PDF lido mas FALTARAM campos {_faltam} "
+                              f"({_rot}) | arquivo: {pdf}")
                 except Exception as e:
-                    print(f"   [callback] AVISO: falha ao ler PDF: {type(e).__name__}: {e}")
+                    try:
+                        _tam = os.path.getsize(pdf)
+                    except Exception:
+                        _tam = -1
+                    print(f"   [callback] AVISO: FALHA ao LER o PDF ({_rot}): "
+                          f"{type(e).__name__}: {e} | arquivo: {pdf} ({_tam} bytes)")
+            # USINA: kwh_injetado é OBRIGATÓRIO (vira 'Resultado (kWh)'). Se o PDF não o
+            # trouxe, não manda um COMPLETE furado (o CRM recusaria) -> marca
+            # DADOS_INCOMPLETOS pra entrar na retentativa em vez de virar "lido errado".
+            if usina and not str(dados.get("kwh_injetado") or "").strip():
+                print(f"   [{tag}] AVISO: kwh_injetado vazio -> enviando DADOS_INCOMPLETOS "
+                      f"(id={id_fatura}).")
+                status_enum, dados, pdf = STATUS_DADOS_INCOMPLETOS, {}, None
         item = montar_item_resultado(id_fatura, status_enum, dados=dados,
                                      uc_aneel=uc_aneel, pdf_path=pdf)
-        resp = enviar_resultados([item])
+        resp = enviar_resultados([item], rota=rota)
         res = (resp.get("data") or {}).get("resultados") or resp.get("resultados") or []
         if res:
             r0 = res[0]
             conta["_crm"] = f"{status_enum} -> {r0.get('return')} {r0.get('message', '')}".strip()
-            print(f"   [callback] {status_enum} (id={id_fatura}) -> "
+            print(f"   [{tag}] {status_enum} (id={id_fatura}) -> "
                   f"{r0.get('return')} {r0.get('message', '')}")
         else:
             conta["_crm"] = f"{status_enum} enviado"
-            print(f"   [callback] {status_enum} enviado (id={id_fatura}).")
+            print(f"   [{tag}] {status_enum} enviado (id={id_fatura}).")
     except Exception as e:
         conta["_crm"] = f"falha no envio (na fila): {type(e).__name__}: {e}"
-        print(f"   [callback] AVISO: falha ao enviar id_fatura={id_fatura}: "
+        print(f"   [{tag}] AVISO: falha ao enviar id_fatura={id_fatura}: "
               f"{type(e).__name__}: {e}")
-        try:   # não perde o resultado: guarda e reenvia na próxima execução
+        try:   # não perde o resultado: guarda e reenvia na próxima execução (com a rota certa)
             import fila_crm
-            fila_crm.guardar(id_fatura, status_enum, dados, uc_aneel, pdf, f"{type(e).__name__}: {e}")
+            fila_crm.guardar(id_fatura, status_enum, dados, uc_aneel, pdf,
+                             f"{type(e).__name__}: {e}", rota=rota)
         except Exception as e2:
             print(f"   [fila CRM] AVISO: não consegui guardar: {e2}")
 
@@ -309,10 +337,13 @@ def _pos_execucao(resultado: RegistroResultados, html_rel):
         print(f"[historico] aviso: {type(e).__name__}: {e}")
 
 
-def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
-    """Produção: busca as faturas da concessionária na API, agrupa por login e processa."""
+def executar(headless, limite=0, enviar=False, concessionaria="COPEL", incluir_usinas=True):
+    """Produção: busca as faturas da concessionária na API, agrupa por login e processa.
+
+    incluir_usinas: também puxa a fila de usinas (farms/readings) e processa junto — o
+    mesmo portal/PDF/callback, cada conta marcada com fonte='USINA' decide a rota do POST."""
     from concessionarias import get_info, get_bot
-    from api_faturas import buscar_faturas, STATUS_FALHA_LOGIN, STATUS_PORTAL_OFFLINE
+    from api_faturas import buscar_faturas, buscar_usinas, STATUS_FALHA_LOGIN, STATUS_PORTAL_OFFLINE
 
     info = get_info(concessionaria)
     if not info["pronta"]:
@@ -349,6 +380,17 @@ def executar(headless, limite=0, enviar=False, concessionaria="COPEL"):
         except Exception:
             pass
         return
+    # Fila de usinas: mesma concessionária, mesmo portal. Se a chave não tiver o escopo
+    # farms:readings:* (HTTP 403) ou der qualquer erro, loga e segue só com os títulos.
+    if incluir_usinas:
+        try:
+            usinas = buscar_usinas(alias=info["alias_api"])
+            if usinas:
+                print(f"[api] +{len(usinas)} usina(s) na fila (farms/readings).")
+            faturas = faturas + usinas
+        except Exception as e:
+            print(f"[api] AVISO: fila de usinas indisponível ({type(e).__name__}: {e}). "
+                  f"Seguindo só com os títulos.")
     if os.environ.get("ROBO_CONTINUO") == "1":
         # modo 24/7: não re-tenta a cada ciclo o que acabou de falhar/concluir
         import memoria_tentativas
@@ -645,13 +687,21 @@ def testar(caminho_planilha):
 
 def testar_api():
     """Só testa a conexão com a API e lista as faturas recebidas (sem navegador)."""
-    from api_faturas import buscar_faturas
+    from api_faturas import buscar_faturas, buscar_usinas
     faturas = buscar_faturas()
     print(f"\n[api] {len(faturas)} fatura(s) recebida(s) "
           f"(concessionária {config.CONCESSIONARIA_ALIAS or 'todas'}):")
     for c in faturas:
         print(f"   id={c['id_fatura']} | login={c['login']} | UC={c['uc']} "
               f"| mês={c['mes_referencia']} | uc_aneel(API)={c['uc_aneel_api']}")
+    try:
+        usinas = buscar_usinas()
+        print(f"\n[api] {len(usinas)} usina(s) na fila (farms/readings):")
+        for c in usinas:
+            print(f"   id={c['id_fatura']} | tipo={c['fonte']} | login={c['login']} "
+                  f"| UC={c['uc']} | mês={c['mes_referencia']} | uc_aneel(API)={c['uc_aneel_api']}")
+    except Exception as e:
+        print(f"\n[api] AVISO: fila de usinas indisponível ({type(e).__name__}: {e}).")
 
 
 def main():
@@ -664,6 +714,8 @@ def main():
                         help="processa só as N primeiras faturas (0 = todas)")
     parser.add_argument("--enviar", action="store_true",
                         help="devolve o resultado de cada fatura pra API (POST)")
+    parser.add_argument("--sem-usinas", dest="sem_usinas", action="store_true",
+                        help="não puxa a fila de usinas (farms/readings); só os títulos")
     args = parser.parse_args()
 
     if args.modo == "modelo":
@@ -678,7 +730,8 @@ def main():
     elif args.modo == "plan":
         executar_planilha(limite=args.limite)
     else:
-        executar(headless=args.headless, limite=args.limite, enviar=args.enviar)
+        executar(headless=args.headless, limite=args.limite, enviar=args.enviar,
+                 incluir_usinas=not args.sem_usinas)
 
 
 if __name__ == "__main__":

@@ -249,6 +249,10 @@ class Painel(tk.Tk):
         self.sem_enviar = tk.BooleanVar(value=False)
         self._api_box = ttk.Checkbutton(
             self.area, text="Ensaio — só teste, NÃO envia pro CRM", variable=self.sem_enviar)
+        self.incluir_usinas = tk.BooleanVar(value=True)
+        self._api_usinas_box = ttk.Checkbutton(
+            self.area, text="Incluir faturas das usinas (fila farms/readings)",
+            variable=self.incluir_usinas)
         self._plan_box = ttk.Frame(self.area, style="Card.TFrame")
         ttk.Button(self._plan_box, text="📄  Abrir planilha (contas.xlsx)",
                    command=self._abrir_planilha).pack(side="left")
@@ -296,8 +300,10 @@ class Painel(tk.Tk):
     def _atualizar_modo(self):
         self._plan_box.pack_forget()
         self._api_box.pack_forget()
+        self._api_usinas_box.pack_forget()
         if self.modo_var.get() == "api":
             self._api_box.pack(anchor="w")
+            self._api_usinas_box.pack(anchor="w", pady=(4, 0))
         else:
             self._plan_box.pack(anchor="w")
 
@@ -693,6 +699,8 @@ class Painel(tk.Tk):
             cmd.append("--ignorar-pausa")
         if fonte == "api" and self.sem_enviar.get():
             cmd.append("--sem-enviar")
+        if fonte == "api" and not self.incluir_usinas.get():
+            cmd.append("--sem-usinas")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         try:
             self._proc = subprocess.Popen(

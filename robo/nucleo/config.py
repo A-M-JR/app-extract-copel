@@ -100,6 +100,7 @@ URL_LOGIN_CELESC = "https://conecte.celesc.com.br/autenticacao/login"
 API_BASE_URL         = _LOCAL.get("api_base_url") or os.environ.get("API_BASE_URL", "http://localhost/plataforma-crm")
 API_ROTA_PREPARACAO  = "/api/v1/invoices/preparation"            # GET (busca as faturas)
 API_ROTA_READINGS    = "/api/v1/invoices/preparation/readings"   # POST (devolve o resultado)
+API_ROTA_USINAS      = "/api/v1/farms/readings"                  # GET (fila usinas) e POST (retorno) — mesma URL
 API_TOKEN            = revelar(_LOCAL.get("api_token", "")) or os.environ.get("PCRM_API_TOKEN", "")
 CONCESSIONARIA_ALIAS = "CDI"     # COPEL DISTRIBUIDORA (alias 'CDI' no CRM). None = todas
 API_TIMEOUT_S        = 30

@@ -29,11 +29,22 @@ if not defined PY (
 )
 echo [instalar] usando o Python: !PY!
 
-if not exist ".venv\Scripts\python.exe" (
+set "VENV=.venv\Scripts\python.exe"
+REM .venv COPIADA de outra maquina aponta pro Python de la e nao roda ("No Python at ...").
+REM Entao: se ja existe, TESTA se funciona; se nao rodar, apaga e recria do zero.
+set "VENV_OK="
+if exist "!VENV!" (
+    "!VENV!" -c "import sys" >nul 2>nul
+    if not errorlevel 1 set "VENV_OK=1"
+)
+if exist "!VENV!" if not defined VENV_OK (
+    echo [instalar] .venv invalida ^(copiada de outra maquina?^) - recriando do zero...
+    rmdir /s /q .venv
+)
+if not exist "!VENV!" (
     echo [instalar] criando ambiente virtual .venv ...
     "!PY!" -m venv .venv
 )
-set "VENV=.venv\Scripts\python.exe"
 if not exist "!VENV!" ( echo [ERRO] falha ao criar a .venv. & pause & exit /b 1 )
 
 echo [instalar] instalando dependencias ^(Playwright + captcha por AUDIO/faster-whisper - leve^)...

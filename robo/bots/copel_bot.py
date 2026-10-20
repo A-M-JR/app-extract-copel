@@ -253,11 +253,12 @@ class CopelBot:
 
     def _erro_login(self) -> bool:
         """True se a COPEL mostrou erro que impede o login -> FALHA_LOGIN (não re-tenta):
-        senha inválida / conta bloqueada, OU o erro de servidor 'Exception ao consultar
-        situação da senha: NullPointerException' (a conta não loga, então segue pro próximo)."""
+        senha inválida / conta bloqueada; 'Documento (XXX) inválido' (CPF/CNPJ do login errado
+        no CRM); OU o erro de servidor 'Exception ao consultar situação da senha:
+        NullPointerException' (a conta não loga, então segue pro próximo)."""
         try:
             loc = self.page.get_by_text(re.compile(
-                r"senha\s*inv[aá]lid|senha\s*incorret|(usu[aá]rio|cpf|cnpj|login|dados)"
+                r"senha\s*inv[aá]lid|senha\s*incorret|(usu[aá]rio|cpf|cnpj|login|dados|documento)"
                 r".{0,25}(inv[aá]lid|incorret)|conta.{0,15}bloqu|bloquead|"
                 r"exception ao consultar situa[çc][ãa]o da senha|nullpointerexception", re.I))
             return loc.count() > 0 and loc.first.is_visible()

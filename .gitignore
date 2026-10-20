@@ -15,3 +15,28 @@ tests/referencia_pdfs.json
 
 # config local do Claude Code
 .claude/settings.local.json
+
+# cópia VELHA/flat na raiz (o projeto vivo é robo/) — NÃO versionar.
+# O config.py da raiz tem senha/token hardcoded; o robo/ pega tudo do painel.
+/api_faturas.py
+/bot_base.py
+/captcha_dom.py
+/celesc_bot.py
+/celesc_descobrir.py
+/concessionarias.py
+/config.py
+/copel_bot.py
+/credenciais.py
+/criar_modelo.py
+/fatura_pdf.py
+/main.py
+/painel.py
+/planilha.py
+/resultado_log.py
+/rge_bot.py
+/rge_descobrir.py
+/start.py
+/descobrir_celesc.bat
+/descobrir_rge.bat
+/instalar.bat
+/INSTALACAO-NUC.txt

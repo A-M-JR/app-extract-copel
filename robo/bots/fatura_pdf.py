@@ -205,8 +205,14 @@ def _extrair_celesc(full: str) -> dict:
         dados["leitura_atual"] = m.group(2)
     dados["proxima_leitura"] = _busca(r"Lida\s+(\d{2}/\d{2}/\d{4})", full)
 
-    # Consumo (kWh): "(0P) Consumo TE KWH 381,000" -> 381 (quantidade, não R$)
-    consumo = _busca(r"Consumo\s+TE\s+KWH\s+([\d.]+(?:,\d+)?)", full)
+    # Consumo MEDIDO (kWh) = 1ª coluna (mês atual) da TABELA mensal
+    # "Consumo 910 0 566 503 ...". NÃO usar "Consumo TE KWH 150,000": isso é só UMA
+    # faixa de tarifa (posto 0P) e subestima o total quando a conta tem vários postos.
+    consumo = _busca(r"\bConsumo\s+(\d+)(?:\s+\d+){6,}", full)           # tabela mensal
+    if not consumo:   # fallback: cabeçalho "Consumo Faturado Dias Faturados OUT/26 910 30"
+        consumo = _busca(r"Consumo Faturado\s+Dias Faturados\s+\w+/\d+\s+(\d+)", full)
+    if not consumo:   # fallback antigo (PDF sem a tabela / 1 posto só)
+        consumo = _busca(r"Consumo\s+TE\s+KWH\s+([\d.]+(?:,\d+)?)", full)
     dados["kwh_total_consumo"] = _fmt_kwh(_num_br(consumo)) if consumo else "0"
 
     # Injeção (GD): soma das qtes "En Injetad TE ... KWH <num>" (as linhas TUSD duplicam a TE).
