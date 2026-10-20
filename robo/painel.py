@@ -103,6 +103,7 @@ class Painel(tk.Tk):
         nb.add(self._aba_config(nb), text="🔑  Conexão CRM")
         nb.add(self._aba_ajustes(nb), text="⚙  Configurações")
         nb.add(self._aba_email(nb), text="✉  E-mail")
+        nb.add(self._aba_faturas_email(nb), text="📥  Faturas (e-mail)")
         self._ajustar_tamanho()
 
     def _icones(self):
@@ -845,6 +846,81 @@ class Painel(tk.Tk):
             except Exception:
                 pass
         # o _ler_saida detecta o fim e o _poll_fila mostra "Parado pelo usuário"
+
+    # ---------- aba Faturas por e-mail (Microsoft Graph) ----------
+    def _aba_faturas_email(self, parent):
+        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 24))
+        f.columnconfigure(0, weight=1)
+
+        ttk.Label(f, text="Leitura de faturas por e-mail (Microsoft Graph)",
+                  style="Secao.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Separator(f).grid(row=1, column=0, sticky="ew", pady=(2, 10))
+        ttk.Label(f, text="Acesso app-only (somente leitura, Mail.Read). O segredo fica "
+                          "criptografado nesta máquina.", style="Muted.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(0, 12))
+
+        def campo(linha, rotulo, var, mostrar=None):
+            ttk.Label(f, text=rotulo, style="Field.TLabel").grid(
+                row=linha, column=0, sticky="w", pady=(0, 4))
+            ttk.Entry(f, textvariable=var, font=("Segoe UI", 10),
+                      **({"show": mostrar} if mostrar else {})).grid(
+                row=linha + 1, column=0, sticky="ew", pady=(0, 12))
+
+        self.fe_tenant = tk.StringVar(value=getattr(config, "EMAIL_GRAPH_TENANT", ""))
+        self.fe_client = tk.StringVar(value=getattr(config, "EMAIL_GRAPH_CLIENT", ""))
+        self.fe_caixas = tk.StringVar(value=", ".join(getattr(config, "EMAIL_CAIXAS", []) or []))
+        self.fe_secret = tk.StringVar(value="")
+        tem_seg = bool((self.local.get("email_secret") or "").strip())
+
+        campo(3, "DIRECTORY (TENANT) ID", self.fe_tenant)
+        campo(5, "APPLICATION (CLIENT) ID", self.fe_client)
+        campo(7, "SEGREDO (VALOR)" + ("   — já salvo; deixe em branco pra manter" if tem_seg
+                                      else "   — cole o Valor do segredo do app"),
+              self.fe_secret, mostrar="•")
+        campo(9, "CAIXAS A LER  (separe por vírgula)", self.fe_caixas)
+
+        bs = ttk.Frame(f, style="Card.TFrame")
+        bs.grid(row=20, column=0, pady=(6, 0))
+        ttk.Button(bs, text="✔  Salvar", style="Save.TButton",
+                   command=self._salvar_faturas_email).pack(side="left", padx=6)
+        ttk.Button(bs, text="🔌  Testar leitura",
+                   command=self._testar_faturas_email).pack(side="left", padx=6)
+        return f
+
+    def _salvar_faturas_email(self, avisar=True) -> bool:
+        import segredos
+        self.local["email_tenant"] = self.fe_tenant.get().strip()
+        self.local["email_client"] = self.fe_client.get().strip()
+        self.local["email_caixas"] = [c.strip() for c in
+                                      self.fe_caixas.get().replace(";", ",").split(",") if c.strip()]
+        novo = self.fe_secret.get().strip()
+        if novo:                                  # vazio = mantém o segredo já salvo
+            self.local["email_secret"] = segredos.proteger(novo)
+        salvar_local(self.local)
+        self.fe_secret.set("")                    # não deixa o segredo em claro na tela
+        if avisar:
+            messagebox.showinfo("Salvo", "Configuração de faturas por e-mail salva.")
+        return True
+
+    def _testar_faturas_email(self):
+        if not self._salvar_faturas_email(avisar=False):
+            return
+        import importlib
+        importlib.reload(config)
+        import email_graph
+        importlib.reload(email_graph)
+        caixas = getattr(config, "EMAIL_CAIXAS", []) or []
+        if not caixas:
+            messagebox.showwarning("Faturas por e-mail", "Preencha ao menos uma caixa.")
+            return
+        linhas = []
+        for c in caixas:
+            try:
+                m = email_graph.listar_mensagens(c, desde_dias=7)
+                linhas.append(f"✔  {c}: {len(m)} msg(s) com anexo (7d)")
+            except Exception as e:
+                linhas.append(f"✖  {c}: {type(e).__name__}")
+        messagebox.showinfo("Teste de leitura", "\n".join(linhas))
 
     def _salvar_config(self):
         import segredos

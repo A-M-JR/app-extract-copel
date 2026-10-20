@@ -244,6 +244,54 @@ def enviar_resultados(itens: list[dict], timeout: int | None = None,
             f"Início da resposta: {corpo!r}")
 
 
+# --------------------------------------------------------------------------
+# Fonte por E-MAIL: POST por CHAVES (o CRM acha/gera o título pela matrícula/uc_aneel)
+# --------------------------------------------------------------------------
+def montar_item_email(chaves: dict, dados: dict | None = None,
+                      pdf_path: str | None = None) -> dict:
+    """Monta um item pro POST /api/v1/invoices/readings:
+       {chaves:{concessionaria_alias, matricula, uc_aneel, ano_mes_referencia},
+        leitura_fatura:{status_leitura, ...campos preenchidos...}, pdf_base64}"""
+    leitura = {"status_leitura": STATUS_COMPLETE}
+    for campo in CAMPOS_LEITURA:
+        valor = (dados or {}).get(campo)
+        if valor not in (None, ""):
+            leitura[campo] = valor
+    item = {"chaves": {k: v for k, v in chaves.items() if v not in (None, "")},
+            "leitura_fatura": leitura}
+    if pdf_path:
+        item["pdf_base64"] = _pdf_para_base64(pdf_path)
+    return item
+
+
+def enviar_leituras_email(itens: list[dict], timeout: int | None = None,
+                          lote: int = 50) -> list[dict]:
+    """POST das leituras por chave no endpoint de e-mail, em lotes de até `lote` (máx 50).
+    Devolve a lista achatada de resultados (return/id_fatura/titulo_gerado/message)."""
+    if not itens:
+        return []
+    timeout = getattr(config, "API_TIMEOUT_S", 60) if timeout is None else timeout
+    url = _base_url() + getattr(config, "API_ROTA_EMAIL_READINGS", "/api/v1/invoices/readings")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_token()}",
+    }
+    resultados: list[dict] = []
+    for i in range(0, len(itens), max(1, min(lote, 50))):
+        bloco = itens[i:i + max(1, min(lote, 50))]
+        resp = requests.post(url, headers=headers, json={"faturas": bloco}, timeout=timeout)
+        resp.raise_for_status()
+        try:
+            j = resp.json()
+        except ValueError:
+            corpo = (resp.text or "").strip()[:400].replace("\n", " | ")
+            raise ApiError(f"resposta NÃO-JSON do POST (HTTP {resp.status_code}) em {resp.url}. "
+                           f"Início: {corpo!r}")
+        resultados.extend((j.get("data") or {}).get("resultados") or j.get("resultados") or [])
+    return resultados
+
+
 if __name__ == "__main__":
     try:
         faturas = buscar_faturas()

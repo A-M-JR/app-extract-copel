@@ -707,7 +707,8 @@ def testar_api():
 def main():
     parser = argparse.ArgumentParser(description="Robô de faturas da COPEL — Rotina 1")
     parser.add_argument("modo", nargs="?", default="executar",
-                        choices=["modelo", "descobrir", "testar", "executar", "api", "plan"])
+                        choices=["modelo", "descobrir", "testar", "executar", "api", "plan",
+                                 "email"])
     parser.add_argument("--planilha", default=config.PLANILHA_CONTAS)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--limite", type=int, default=0,
@@ -729,6 +730,9 @@ def main():
         testar_api()
     elif args.modo == "plan":
         executar_planilha(limite=args.limite)
+    elif args.modo == "email":
+        from email_faturas import executar as executar_email
+        executar_email(enviar=args.enviar, limite=args.limite)
     else:
         executar(headless=args.headless, limite=args.limite, enviar=args.enviar,
                  incluir_usinas=not args.sem_usinas)

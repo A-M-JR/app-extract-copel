@@ -4,6 +4,8 @@ Parser da fatura (DANF3E) — extrai os campos de `leitura_fatura` do PDF.
 Detecta a concessionária pelo próprio texto do PDF e roteia:
   - COPEL  -> _extrair_copel  (layout original, intocado)
   - RGE/CPFL -> _extrair_rge  (layout DANF3E da RGE)
+  - CELESC -> _extrair_celesc (layout DANF3E da Celesc)
+  - ENERGISA -> _extrair_energisa (layout DANF3E da Energisa; MS/MT e demais do grupo)
 
 Usa extract_words agrupado por linha (o extract_text embaralha os números;
 agrupar por posição resolve isso).
@@ -235,15 +237,69 @@ def _extrair_celesc(full: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# ENERGISA (MS/MT e demais distribuidoras do grupo) — DANF3E
+# --------------------------------------------------------------------------
+def _extrair_energisa(full: str) -> dict:
+    dados = _vazio()
+
+    # Nota fiscal: "NOTA FISCAL Nº: 019.040.934 - Série: 002" -> só dígitos
+    nf = _busca(r"NOTA FISCAL\s*N[^\d]*([\d.]+)", full)
+    dados["nota_fiscal"] = re.sub(r"\D", "", nf)
+
+    # Ref/venc/valor: "Setembro / 2026 07/10/2026 R$ 179,17" (mês por extenso + ano).
+    # GD com crédito pode vir NEGATIVO -> valor_total "0,00" (regra combinada c/ o CRM).
+    m = re.search(
+        r"[A-Za-zçÇ]+\s*/\s*\d{4}\s+(\d{2}/\d{2}/\d{4})\s+(-?)\s*R\$\s*(-?)\s*([\d.]*\d,\d{2})",
+        full)
+    if m:
+        dados["data_vencimento"] = m.group(1)
+        negativo = "-" in (m.group(2) + m.group(3))
+        dados["valor_total"] = "0,00" if negativo else m.group(4)
+
+    # Leituras: "25/08/2026 25/09/2026 31 26/10/2026" (anterior, atual, dias, próxima)
+    m = re.search(
+        r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+\d{1,3}\s+(\d{2}/\d{2}/\d{4})", full)
+    if m:
+        dados["leitura_anterior"] = m.group(1)
+        dados["leitura_atual"] = m.group(2)
+        dados["proxima_leitura"] = m.group(3)
+
+    # Consumo (kWh): "Consumo em kWh KWH 403,00 ..." (1ª coluna = quantidade faturada)
+    consumo = _busca(r"Consumo em kWh\s+KWH\s+([\d.]*\d(?:,\d+)?)", full)
+    dados["kwh_total_consumo"] = _fmt_kwh(_num_br(consumo)) if consumo else "0"
+
+    # Injetado (GD): soma das linhas "Energia Atv Injetada ... KWH <qtd>".
+    # OBS: na Energisa essas linhas são a compensação (créditos usados no mês). A confirmar
+    # contra um registro real do CRM se o campo deve ser isto ou a injeção do medidor.
+    inj, achou = 0.0, False
+    for m in re.finditer(r"Energia\s+Atv\s+Injetada[^K]*KWH\s+([\d.]*\d(?:,\d+)?)", full, re.I):
+        inj += _num_br(m.group(1)); achou = True
+    dados["kwh_injetado"] = _fmt_kwh(inj) if achou else ""
+
+    # Saldo de crédito (nem toda fatura traz; pode estar na pág. 2) — best-effort.
+    dados["saldo_credito_todos_periodos"] = _busca(
+        r"[Ss]aldo[^:\d]*(?:cr[ée]dito|energia)[^:\d]*:?\s*([\d.]*\d)", full)
+
+    # Débito automático: NÃO usar "DÉBITO AUTOMÁTICO" solto — a Energisa imprime
+    # "CADASTRE SUA FATURA EM DÉBITO AUTOMÁTICO" (marketing) em TODA fatura comum.
+    # Só é débito automático de verdade quando não há boleto ("FATURA ARRECADADA"/"NÃO RECEBER").
+    dados["debito_automatico"] = bool(
+        re.search(r"FATURA ARRECADADA|N\S?O RECEBER", full, re.I))
+    return dados
+
+
+# --------------------------------------------------------------------------
 # Dispatcher: detecta a concessionária pelo texto e roteia
 # --------------------------------------------------------------------------
 def extrair_dados(pdf_path: str) -> dict:
     with pdfplumber.open(pdf_path) as pdf:
         pg0 = " ".join(_linhas(pdf.pages[0]))
-        # CELESC guarda o saldo de crédito na PÁGINA 2 -> junta todas as páginas p/ ela.
+        # CELESC/ENERGISA podem guardar o saldo de crédito na PÁGINA 2 -> junta tudo p/ elas.
         todas = " ".join(" ".join(_linhas(pg)) for pg in pdf.pages)
     if re.search(r"\bcelesc\b", pg0, re.I):
         return _extrair_celesc(todas)
+    if re.search(r"\benergisa\b", pg0, re.I):
+        return _extrair_energisa(todas)
     if re.search(r"\bRGE\b|rge-rs", pg0, re.I):   # COPEL/RGE seguem só a pág. 1 (validado)
         return _extrair_rge(pg0)
     return _extrair_copel(pg0)

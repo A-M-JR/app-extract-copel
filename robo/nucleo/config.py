@@ -100,10 +100,36 @@ URL_LOGIN_CELESC = "https://conecte.celesc.com.br/autenticacao/login"
 API_BASE_URL         = _LOCAL.get("api_base_url") or os.environ.get("API_BASE_URL", "http://localhost/plataforma-crm")
 API_ROTA_PREPARACAO  = "/api/v1/invoices/preparation"            # GET (busca as faturas)
 API_ROTA_READINGS    = "/api/v1/invoices/preparation/readings"   # POST (devolve o resultado)
+# fonte por e-mail: POST por CHAVES (matrícula/uc_aneel), o CRM acha/gera o título.
+# escopo do token: invoices:readings:write (e ucs:holder:read p/ o titular/senha do PDF).
+API_ROTA_EMAIL_READINGS = "/api/v1/invoices/readings"
+API_ROTA_TITULAR        = "/api/v1/ucs/titular"                   # GET (titular p/ senha do PDF)
 API_ROTA_USINAS      = "/api/v1/farms/readings"                  # GET (fila usinas) e POST (retorno) — mesma URL
 API_TOKEN            = revelar(_LOCAL.get("api_token", "")) or os.environ.get("PCRM_API_TOKEN", "")
 CONCESSIONARIA_ALIAS = "CDI"     # COPEL DISTRIBUIDORA (alias 'CDI' no CRM). None = todas
 API_TIMEOUT_S        = 30
+
+# --- Fonte por E-MAIL (Microsoft Graph, app-only / Mail.Read) --------------
+# Lê as caixas compartilhadas do M365 e baixa os PDFs de fatura anexados.
+# tenant/client NÃO são segredo (ficam aqui como padrão). O SEGREDO nunca fica
+# no código: vem do painel (criptografado DPAPI em config_local.json) ou da env
+# GRAPH_SECRET. Sugestão: rotacionar o segredo no Entra após ligar tudo.
+EMAIL_GRAPH_TENANT = (_LOCAL.get("email_tenant") or os.environ.get("GRAPH_TENANT")
+                      or "7eca1a0f-7331-4254-9e11-17e16ac1de73")
+EMAIL_GRAPH_CLIENT = (_LOCAL.get("email_client") or os.environ.get("GRAPH_CLIENT")
+                      or "654ddff4-1e38-420d-86b3-8950dcd0e446")
+EMAIL_GRAPH_SECRET = revelar(_LOCAL.get("email_secret", "")) or os.environ.get("GRAPH_SECRET", "")
+# caixas a ler (as 2 liberadas; faturas.energia@ilumisol e matriz@tangisa entram
+# quando o infra liberar o 403 da Application Access Policy)
+EMAIL_CAIXAS = _LOCAL.get("email_caixas") or [
+    "lider@tangisa.com.br",
+    "administrativo@tangisa.com.br",
+]
+EMAIL_DIAS = 35                  # janela de busca (dias) na Caixa de Entrada
+# domínios/remetentes que mandam fatura (p/ filtrar o que é fatura do resto)
+EMAIL_REMETENTES_FATURA = ["energisa.com.br", "copel.com", "celesc.com.br", "enel.com"]
+# aliases do CRM cujas faturas chegam por E-MAIL (não por portal). EMS/EMT prontos.
+EMAIL_ALIASES = ["EMS", "EMT"]
 
 # --- Navegador ------------------------------------------------------------
 # Usa o Google Chrome já instalado na máquina (não baixa o Chromium do Playwright).
@@ -202,6 +228,7 @@ garantir_pastas()
 
 # --- Modo 24/7 (rodar_24h.py) ----------------------------------------------
 CONTINUO_CONCESSIONARIAS   = ["COPEL", "RGE", "CELESC"]   # quais rodar a cada ciclo (painel > Configurações)
+CONTINUO_EMAIL             = True        # roda também a fonte por e-mail (Energisa) a cada ciclo
 CONTINUO_PARALELO          = True        # roda as concessionárias ao mesmo tempo (cada uma no seu navegador)
 CONTINUO_INTERVALO_MIN     = 30          # de quanto em quanto tempo consulta o CRM
 CONTINUO_HORA_INICIO       = 0           # janela de funcionamento (0–24 = o dia todo)
@@ -240,7 +267,7 @@ AJUSTAVEIS_PAINEL = (
     "PAUSA_ENTRE_LOGINS_CAPTCHA_S", "PAUSA_ENTRE_LOGINS_S",
     "MAX_TENTATIVAS_LOGIN", "PAUSA_RETRY_LOGIN_S", "MAX_TENTATIVAS", "PAUSA_CAPTCHA_BLOQUEADO_MIN",
     "CONTINUO_INTERVALO_MIN", "CONTINUO_HORA_INICIO", "CONTINUO_HORA_FIM",
-    "CONTINUO_CONCESSIONARIAS",
+    "CONTINUO_CONCESSIONARIAS", "CONTINUO_EMAIL",
 )
 for _k, _v in (_LOCAL.get("config") or {}).items():
     if _k in AJUSTAVEIS_PAINEL:

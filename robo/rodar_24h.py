@@ -122,6 +122,43 @@ def _rodar_concessionaria(conc: str):
          f"{(time.time() - inicio) / 60:.1f} min) ---")
 
 
+def _rodar_email():
+    """Fonte por e-mail (Energisa): lê as caixas e manda as leituras pro CRM. Não usa
+    navegador/captcha, então roda direto o main.py (sem a parafernália do start.py)."""
+    cmd = [_python(), "-u", str(ROBO / "main.py"), "email"]
+    if getattr(config, "CONTINUO_ENVIAR_CRM", True):
+        cmd.append("--enviar")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    limite_s = int(getattr(config, "CONTINUO_TIMEOUT_CICLO_MIN", 360)) * 60
+    _log("--- E-MAIL: iniciando ciclo ---")
+    _status("rodando e-mail...")
+    proc = subprocess.Popen(cmd, cwd=str(RAIZ), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                            errors="replace", bufsize=1,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    estourou = []
+
+    def _matar():
+        if proc.poll() is None:
+            estourou.append(1)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    vigia = threading.Timer(limite_s, _matar)
+    vigia.daemon = True
+    vigia.start()
+    try:
+        for linha in proc.stdout:
+            _log(f"   [email] {linha.rstrip()}")
+    except Exception:
+        pass
+    vigia.cancel()
+    proc.wait()
+    if estourou:
+        _log("!!! E-MAIL: passou do tempo limite — ciclo encerrado à força.")
+    _log(f"--- E-MAIL: fim do ciclo (código {proc.returncode}) ---")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -162,6 +199,11 @@ def main():
                 else:
                     for conc in concs:
                         _um(conc)
+                if getattr(config, "CONTINUO_EMAIL", True):
+                    try:
+                        _rodar_email()
+                    except Exception as e:
+                        _log(f"!!! E-MAIL: erro no ciclo: {type(e).__name__}: {e}")
             else:
                 _log(f"fora da janela ({config.CONTINUO_HORA_INICIO}h–"
                      f"{config.CONTINUO_HORA_FIM}h) — aguardando.")
