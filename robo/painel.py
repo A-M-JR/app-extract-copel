@@ -351,7 +351,7 @@ class Painel(tk.Tk):
     # ---------- aba Configurações (robô) ----------
     _CAPTCHA_OPCOES = {
         "Extensão Buster (Chrome do robô)":           ("cdp", True, "buster"),
-        "Solver próprio (áudio/YOLO) — desativado":   ("launch", True, "dom"),
+        "Solver próprio (áudio, faster-whisper)":     ("launch", True, "dom"),
         "Manual (eu resolvo na tela)":                ("cdp", False, "buster"),
     }
 

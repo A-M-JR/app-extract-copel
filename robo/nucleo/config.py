@@ -121,19 +121,20 @@ PERFIL_CHROME_CDP = str(RAIZ / "dados" / "chrome-robo")
 CHROME_EXE        = ""        # vazio = acha sozinho (Program Files / LocalAppData)
 
 # --- Captcha ---------------------------------------------------------------
-# O reCAPTCHA é resolvido pelo PRÓPRIO robô, no DOM (captcha_dom.py), usando o seu
-# servidor YOLO como cérebro — igual a extensão fazia, mas sem mexer no mouse e sem
-# extensão (o Chrome 150 removeu o --load-extension). Suba o servidor antes:
-#   captcha-solver\iniciar_servidor.bat   (fica em http://127.0.0.1:5000)
+# O reCAPTCHA é resolvido pelo PRÓPRIO robô, no DOM (captcha_dom.py), pelo ÁUDIO: baixa o
+# mp3 do desafio e manda pro servidor local (faster-whisper transcreve) — MESMA ideia do
+# Buster, mas com o nosso whisper. Suba o servidor antes (o start.py já faz isso quando o
+# método é "dom"):  captcha-solver\iniciar_servidor.bat   (fica em http://127.0.0.1:5000)
 CAPTCHA_AUTO         = True                       # False = resolver na mão
 # Qual solver usar quando CAPTCHA_AUTO=True:
-#   "buster" = clica no botão da extensão Buster dentro do desafio (exige MODO_NAVEGADOR="cdp")
-#   "dom"    = solver próprio (captcha_dom.py: áudio faster-whisper + servidor local) — DESATIVADO
-#              por enquanto, mas mantido: é só voltar pra "dom" pra reativar.
+#   "buster" = clica no botão da extensão Buster dentro do desafio (exige MODO_NAVEGADOR="cdp") — ATIVO
+#   "dom"    = solver próprio (captcha_dom.py: áudio faster-whisper no servidor local) — PRONTO,
+#              reservado pra quando o Buster parar. Trocar aqui (ou no painel: aba Configurações)
+#              reativa; o start.py sobe o servidor sozinho. Precisa da pasta irmã captcha-solver.
 CAPTCHA_METODO       = "buster"
 CAPTCHA_BUSTER_TIMEOUT_S = 120                    # orçamento do Buster por login
-CAPTCHA_AUDIO        = True                        # resolve pelo ÁUDIO (faster-whisper, grátis/local) e cai na imagem se falhar
-CAPTCHA_SERVIDOR     = "http://127.0.0.1:5000/"   # servidor YOLO local
+CAPTCHA_AUDIO        = True                        # modo "dom": resolve pelo ÁUDIO (faster-whisper, grátis/local)
+CAPTCHA_SERVIDOR     = "http://127.0.0.1:5000/"   # servidor local do captcha (faster-whisper) — usado no modo "dom"
 CAPTCHA_SOLVER_DIR   = os.environ.get("CAPTCHA_SOLVER_DIR", str(RAIZ.parent / "captcha-solver"))  # pasta irmã (portável)
 EXTENSAO_CAPTCHA     = ""      # não usado (extensão bloqueada pelo Chrome 150)
 STEALTH              = True    # reduz sinais de automação (navigator.webdriver etc.)
