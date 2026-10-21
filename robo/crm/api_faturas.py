@@ -265,12 +265,13 @@ def montar_item_email(chaves: dict, dados: dict | None = None,
 
 
 def enviar_leituras_email(itens: list[dict], timeout: int | None = None,
-                          lote: int = 50) -> list[dict]:
-    """POST das leituras por chave no endpoint de e-mail, em lotes de até `lote` (máx 50).
-    Devolve a lista achatada de resultados (return/id_fatura/titulo_gerado/message)."""
+                          lote: int | None = None) -> list[dict]:
+    """POST das leituras por chave no endpoint de e-mail, em lotes pequenos (PDFs em base64
+    são pesados -> poucos por POST). Devolve a lista achatada de resultados."""
     if not itens:
         return []
-    timeout = getattr(config, "API_TIMEOUT_S", 60) if timeout is None else timeout
+    timeout = getattr(config, "EMAIL_TIMEOUT_S", 180) if timeout is None else timeout
+    lote = getattr(config, "EMAIL_LOTE", 5) if lote is None else lote
     url = _base_url() + getattr(config, "API_ROTA_EMAIL_READINGS", "/api/v1/invoices/readings")
     headers = {
         "Accept": "application/json",

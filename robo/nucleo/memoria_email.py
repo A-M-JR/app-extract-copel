@@ -19,7 +19,8 @@ _ARQ = config.PASTA_DADOS / "memoria_email.json"
 _ESPERA_H = {
     "OK":            72,   # já foi lida/gravada no CRM — não reenvia
     "DUPLICADA":     72,   # o CRM já tinha a leitura
-    "NAO_ENCONTRADO": 6,   # ainda não há título/contrato — tenta de novo mais tarde
+    "NAO_ENCONTRADO": 48,  # sem título/contrato ou mês além do limite de geração — evita
+                           # re-baixar o PDF toda hora (meses antigos nunca vão achar)
     "ERRO":           1,   # erro de validação/processamento
     "SEM_RESPOSTA":   1,   # POST não voltou com retorno pra essa fatura
 }
