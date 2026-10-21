@@ -123,9 +123,11 @@ EMAIL_GRAPH_SECRET = revelar(_LOCAL.get("email_secret", "")) or os.environ.get("
 # quando o infra liberar o 403 da Application Access Policy)
 EMAIL_CAIXAS = _LOCAL.get("email_caixas") or [
     "lider@tangisa.com.br",
+    "matriz@tangisa.com.br",
     "administrativo@tangisa.com.br",
+    "faturas.energia@ilumisol.com.br",
 ]
-EMAIL_DIAS = 35                  # janela de busca (dias) na Caixa de Entrada
+EMAIL_DIAS = 90                  # janela de busca (dias) na Caixa de Entrada
 # domínios/remetentes que mandam fatura (p/ filtrar o que é fatura do resto)
 EMAIL_REMETENTES_FATURA = ["energisa.com.br", "copel.com", "celesc.com.br", "enel.com"]
 # aliases do CRM cujas faturas chegam por E-MAIL (não por portal). EMS/EMT prontos.
@@ -229,6 +231,7 @@ garantir_pastas()
 # --- Modo 24/7 (rodar_24h.py) ----------------------------------------------
 CONTINUO_CONCESSIONARIAS   = ["COPEL", "RGE", "CELESC"]   # quais rodar a cada ciclo (painel > Configurações)
 CONTINUO_EMAIL             = True        # roda também a fonte por e-mail (Energisa) a cada ciclo
+CONTINUO_EMAIL_TUDO        = True        # modo "manda tudo" (push puro) no 24/7; False = só pendentes
 CONTINUO_PARALELO          = True        # roda as concessionárias ao mesmo tempo (cada uma no seu navegador)
 CONTINUO_INTERVALO_MIN     = 30          # de quanto em quanto tempo consulta o CRM
 CONTINUO_HORA_INICIO       = 0           # janela de funcionamento (0–24 = o dia todo)
@@ -267,7 +270,7 @@ AJUSTAVEIS_PAINEL = (
     "PAUSA_ENTRE_LOGINS_CAPTCHA_S", "PAUSA_ENTRE_LOGINS_S",
     "MAX_TENTATIVAS_LOGIN", "PAUSA_RETRY_LOGIN_S", "MAX_TENTATIVAS", "PAUSA_CAPTCHA_BLOQUEADO_MIN",
     "CONTINUO_INTERVALO_MIN", "CONTINUO_HORA_INICIO", "CONTINUO_HORA_FIM",
-    "CONTINUO_CONCESSIONARIAS", "CONTINUO_EMAIL",
+    "CONTINUO_CONCESSIONARIAS", "CONTINUO_EMAIL", "CONTINUO_EMAIL_TUDO",
 )
 for _k, _v in (_LOCAL.get("config") or {}).items():
     if _k in AJUSTAVEIS_PAINEL:

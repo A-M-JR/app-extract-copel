@@ -130,6 +130,34 @@ def _dados_para_crm(pdf: dict, uc_aneel: str, mes_ref: str) -> dict:
     }
 
 
+def _enviar_lote(envios, enviar) -> int:
+    """POST em lote + registra o resultado no dedup + imprime. envios = lista de
+    (chave_dedup, matricula_enviada, mes_ref, rotulo, item). Casa o retorno por
+    matrícula+mês. Devolve quantas deram OK."""
+    enviados = 0
+    if not (enviar and envios):
+        return 0
+    print(f"\n[crm] POST {len(envios)} leitura(s) em {config.API_ROTA_EMAIL_READINGS} ...")
+    try:
+        res = enviar_leituras_email([it for _, _, _, _, it in envios])
+    except Exception as ex:
+        print(f"  [CRM ERRO no POST] {type(ex).__name__}: {ex}")
+        res = []
+    por = {}
+    for r in res:
+        por.setdefault((str(r.get("matricula", "")), str(r.get("ano_mes_referencia", ""))), r)
+    for ch, mat, mes, rotulo, _ in envios:
+        r = por.get((str(mat), str(mes)), {})
+        ret = r.get("return") or "SEM_RESPOSTA"
+        if ret == "OK":
+            enviados += 1
+        memoria_email.registrar(ch, ret)
+        print(f"  [CRM] {rotulo} -> {ret} "
+              f"id={r.get('id_fatura', '-')} titulo_gerado={r.get('titulo_gerado', '-')} "
+              f"{r.get('message', '')}".rstrip())
+    return enviados
+
+
 def executar(enviar=False, limite=0, caixas=None, dias=None):
     caixas = caixas or getattr(config, "EMAIL_CAIXAS", [])
     dias = dias or getattr(config, "EMAIL_DIAS", 35)
@@ -190,40 +218,25 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'} "
                   f"NF={pdf['nota_fiscal']}")
             if enviar:
+                # chave de casamento: a UC que o CRM usa (veio da consulta de pendentes) casa
+                # EXATO; a matrícula do anexo é só parte dela ("10"/"6" + matrícula + dígito),
+                # então mandar a UC do CRM evita o NAO_ENCONTRADO. uc_aneel reforça.
                 chaves = {
                     "concessionaria_alias": e["alias"],
-                    "matricula": e["matricula"],
+                    "matricula": f.get("uc") or e["matricula"],
                     "uc_aneel": uc_aneel,
                     "ano_mes_referencia": f.get("mes_referencia", ""),
                 }
-                dados = _dados_para_crm(pdf, uc_aneel, f.get("mes_referencia", ""))
-                ch = memoria_email.chave(e["alias"], e["matricula"], f.get("mes_referencia", ""))
-                envios.append((ch, e["matricula"],
-                               rotulo,
+                mes_ref = f.get("mes_referencia", "")
+                dados = _dados_para_crm(pdf, uc_aneel, mes_ref)
+                ch = memoria_email.chave(e["alias"], e["matricula"], mes_ref)
+                # a chave 'matricula' enviada (UC do CRM) é a que volta no retorno -> caso por ela+mês.
+                envios.append((ch, chaves["matricula"], mes_ref, rotulo,
                                montar_item_email(chaves, dados, pdf_path=caminho)))
         except Exception as ex:
             print(f"  [ERRO] {rotulo}: {type(ex).__name__}: {ex}")
 
-    enviados = 0
-    if enviar and envios:
-        print(f"\n[crm] POST {len(envios)} leitura(s) em {config.API_ROTA_EMAIL_READINGS} ...")
-        try:
-            res = enviar_leituras_email([it for _, _, _, it in envios])
-        except Exception as ex:
-            print(f"  [CRM ERRO no POST] {type(ex).__name__}: {ex}")
-            res = []
-        por_mat = {}
-        for r in res:
-            por_mat.setdefault(str(r.get("matricula", "")), r)
-        for ch, mat, rotulo, _ in envios:
-            r = por_mat.get(str(mat), {})
-            ret = r.get("return") or "SEM_RESPOSTA"
-            if ret == "OK":
-                enviados += 1
-            memoria_email.registrar(ch, ret)       # dedup: lembra o resultado deste envio
-            print(f"  [CRM] {rotulo} -> {ret} "
-                  f"id={r.get('id_fatura', '-')} titulo_gerado={r.get('titulo_gerado', '-')} "
-                  f"{r.get('message', '')}".rstrip())
+    enviados = _enviar_lote(envios, enviar)
 
     print(f"\nRESUMO: {len(casados)} casada(s)"
           f"{f', {enviados} OK no CRM' if enviar else ' (ensaio, nada enviado)'}.")
@@ -232,9 +245,79 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
               "(ficam pendentes p/ o próximo ciclo).")
 
 
+def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
+    """MODO 'MANDA TUDO' (push puro): manda TODA fatura que achar no e-mail (sem depender
+    da lista de pendentes). Usa a matrícula do anexo como chave — o CRM casa pela matrícula
+    contida na UC e responde OK/DUPLICADA/NAO_ENCONTRADO. O dedup (memoria_email) marca o que
+    já voltou OK/DUPLICADA pra não reenviar no próximo ciclo."""
+    caixas = caixas or getattr(config, "EMAIL_CAIXAS", [])
+    dias = dias or getattr(config, "EMAIL_DIAS", 35)
+
+    print("=" * 64)
+    print(f"FONTE POR E-MAIL — MANDA TUDO — {'ENVIO LIGADO' if enviar else 'ENSAIO (não envia)'}")
+    print(f"  caixas: {', '.join(caixas)}   janela: {dias} dia(s)")
+    print("=" * 64)
+
+    emails = coletar_emails(caixas, dias)
+    print(f"[email] {len(emails)} anexo(s) de fatura coletado(s).")
+
+    jobs, pulados = [], 0
+    for e in emails:
+        mes_ref = f"{e['mes_num']:02d}/{e['mes_ano']}" if e.get("mes_num") else ""
+        ch = memoria_email.chave(e["alias"], e["matricula"], mes_ref)
+        if enviar and memoria_email.em_espera(ch):
+            pulados += 1
+            continue
+        jobs.append((e, mes_ref, ch))
+    if pulados:
+        print(f"[dedup] {pulados} já processada(s) antes — pulada(s) neste ciclo.")
+    if limite and limite > 0:
+        jobs = jobs[:limite]
+        print(f"[limite] processando só as {len(jobs)} primeira(s).")
+    print()
+
+    pasta = config.pasta_faturas_de("ENERGISA_EMAIL")
+    envios = []
+    for e, mes_ref, ch in jobs:
+        rotulo = f"{e['alias']} matr={e['matricula']} {mes_ref} ({e['nome'] if 'nome' in e else ''})".strip()
+        try:
+            pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
+            alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
+            if not alvo:
+                print(f"  [sem anexo] {rotulo}")
+                continue
+            caminho = email_graph.salvar(alvo[1], pasta, alvo[0])
+            pdf = extrair_dados(caminho)
+            uc_aneel = _uc_aneel_do_corpo(e["corpo"])
+            print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
+                  f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
+            if enviar:
+                chaves = {
+                    "concessionaria_alias": e["alias"],
+                    "matricula": e["matricula"],      # matrícula do anexo (CRM casa por substring)
+                    "uc_aneel": uc_aneel,
+                    "ano_mes_referencia": mes_ref,
+                }
+                dados = _dados_para_crm(pdf, uc_aneel, mes_ref)
+                envios.append((ch, e["matricula"], mes_ref, rotulo,
+                               montar_item_email(chaves, dados, pdf_path=caminho)))
+        except Exception as ex:
+            print(f"  [ERRO] {rotulo}: {type(ex).__name__}: {ex}")
+
+    enviados = _enviar_lote(envios, enviar)
+    print(f"\nRESUMO (manda tudo): {len(jobs)} processada(s)"
+          f"{f', {enviados} OK no CRM' if enviar else ' (ensaio, nada enviado)'}.")
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Fonte por e-mail (Energisa) — casa CRM x e-mail")
     ap.add_argument("--enviar", action="store_true", help="devolve o resultado pro CRM")
     ap.add_argument("--limite", type=int, default=0)
-    executar(**vars(ap.parse_args()))
+    ap.add_argument("--tudo", action="store_true",
+                    help="manda TODA fatura do e-mail (push puro), não só as pendentes")
+    args = ap.parse_args()
+    if args.tudo:
+        executar_tudo(enviar=args.enviar, limite=args.limite)
+    else:
+        executar(enviar=args.enviar, limite=args.limite)

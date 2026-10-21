@@ -715,6 +715,8 @@ def main():
                         help="processa só as N primeiras faturas (0 = todas)")
     parser.add_argument("--enviar", action="store_true",
                         help="devolve o resultado de cada fatura pra API (POST)")
+    parser.add_argument("--tudo", action="store_true",
+                        help="modo e-mail: manda TODA fatura do e-mail (push puro), não só as pendentes")
     parser.add_argument("--sem-usinas", dest="sem_usinas", action="store_true",
                         help="não puxa a fila de usinas (farms/readings); só os títulos")
     args = parser.parse_args()
@@ -731,8 +733,11 @@ def main():
     elif args.modo == "plan":
         executar_planilha(limite=args.limite)
     elif args.modo == "email":
-        from email_faturas import executar as executar_email
-        executar_email(enviar=args.enviar, limite=args.limite)
+        import email_faturas
+        if getattr(args, "tudo", False):
+            email_faturas.executar_tudo(enviar=args.enviar, limite=args.limite)
+        else:
+            email_faturas.executar(enviar=args.enviar, limite=args.limite)
     else:
         executar(headless=args.headless, limite=args.limite, enviar=args.enviar,
                  incluir_usinas=not args.sem_usinas)

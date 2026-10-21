@@ -126,6 +126,8 @@ def _rodar_email():
     """Fonte por e-mail (Energisa): lê as caixas e manda as leituras pro CRM. Não usa
     navegador/captcha, então roda direto o main.py (sem a parafernália do start.py)."""
     cmd = [_python(), "-u", str(ROBO / "main.py"), "email"]
+    if getattr(config, "CONTINUO_EMAIL_TUDO", True):
+        cmd.append("--tudo")           # manda toda fatura do e-mail (push puro)
     if getattr(config, "CONTINUO_ENVIAR_CRM", True):
         cmd.append("--enviar")
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
