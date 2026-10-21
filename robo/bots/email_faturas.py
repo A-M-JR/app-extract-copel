@@ -46,6 +46,12 @@ def _uc_aneel_do_corpo(corpo: str) -> str:
     return re.sub(r"\D", "", m.group(1)) if m else ""
 
 
+def _nome_do_corpo(corpo: str) -> str:
+    """Nome do cliente no corpo: 'Caro(a) MARIA ANDREIA ..., sua fatura ...'."""
+    m = re.search(r"Caro\(a\)\s+(.+?),", _strip_html(corpo), re.I)
+    return m.group(1).strip() if m else ""
+
+
 _RX_NOME = re.compile(r"Matricula-0*(\d+)-(\d{2})-(\d{4})", re.I)
 
 
@@ -130,20 +136,19 @@ def _dados_para_crm(pdf: dict, uc_aneel: str, mes_ref: str) -> dict:
     }
 
 
-def _enviar_lote(envios, enviar) -> int:
-    """POST em lote + registra o resultado no dedup + imprime. envios = lista de
+def _enviar_lote(envios, enviar) -> tuple[int, dict]:
+    """POST em lote + registra no dedup + imprime. envios = lista de
     (chave_dedup, matricula_enviada, mes_ref, rotulo, item). Casa o retorno por
-    matrícula+mês. Devolve quantas deram OK."""
-    enviados = 0
+    matrícula+mês. Devolve (qtd_ok, por) onde por[(mat,mes)] = resultado do CRM."""
+    enviados, por = 0, {}
     if not (enviar and envios):
-        return 0
+        return 0, por
     print(f"\n[crm] POST {len(envios)} leitura(s) em {config.API_ROTA_EMAIL_READINGS} ...")
     try:
         res = enviar_leituras_email([it for _, _, _, _, it in envios])
     except Exception as ex:
         print(f"  [CRM ERRO no POST] {type(ex).__name__}: {ex}")
         res = []
-    por = {}
     for r in res:
         por.setdefault((str(r.get("matricula", "")), str(r.get("ano_mes_referencia", ""))), r)
     for ch, mat, mes, rotulo, _ in envios:
@@ -155,7 +160,30 @@ def _enviar_lote(envios, enviar) -> int:
         print(f"  [CRM] {rotulo} -> {ret} "
               f"id={r.get('id_fatura', '-')} titulo_gerado={r.get('titulo_gerado', '-')} "
               f"{r.get('message', '')}".rstrip())
-    return enviados
+    return enviados, por
+
+
+def _relatar(registros, por, enviar):
+    """Anota o retorno do CRM em cada registro, gera o relatório (.xlsx/.html) e, no
+    modo enviar, registra o resumo no histórico (entra no resumo diário por e-mail)."""
+    for reg in registros:
+        r = por.get((str(reg.get("matricula_envio", "")), str(reg.get("mes", ""))), {})
+        reg["retorno"] = ("(ensaio)" if not enviar else (r.get("return") or "SEM_RESPOSTA"))
+        reg["id_fatura"] = r.get("id_fatura", "")
+        reg["titulo_gerado"] = r.get("titulo_gerado", "")
+        reg["mensagem"] = r.get("message", "")
+    if not registros:
+        return
+    try:
+        import relatorio_email
+        xlsx, htmlp = relatorio_email.gerar(registros)
+        print(f"\n[relatorio] {xlsx}")
+        print(f"[relatorio] {htmlp}")
+        if enviar:
+            import historico
+            historico.registrar(relatorio_email.resumo_historico(registros, htmlp))
+    except Exception as e:
+        print(f"[relatorio] aviso: {type(e).__name__}: {e}")
 
 
 def executar(enviar=False, limite=0, caixas=None, dias=None):
@@ -200,9 +228,10 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
         print(f"[limite] processando só as {len(casados)} primeira(s).\n")
 
     pasta = config.pasta_faturas_de("ENERGISA_EMAIL")
-    envios = []   # (matricula, rotulo, item) p/ POST em lote no endpoint de e-mail
+    envios, registros = [], []
     for f, e in casados:
         rotulo = f"id={f['id_fatura']} UC={f['uc']} {f['mes_referencia']} ({e['alias']})"
+        mes_ref = f.get("mes_referencia", "")
         try:
             pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
             alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
@@ -217,26 +246,31 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
             print(f"       venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'} "
                   f"NF={pdf['nota_fiscal']}")
+            chaves = {
+                "concessionaria_alias": e["alias"],
+                # a UC que o CRM usa (da consulta de pendentes) casa EXATO.
+                "matricula": f.get("uc") or e["matricula"],
+                "uc_aneel": uc_aneel,
+                "ano_mes_referencia": mes_ref,
+            }
+            registros.append({
+                "alias": e["alias"], "matricula": e["matricula"],
+                "matricula_envio": chaves["matricula"], "mes": mes_ref,
+                "nome": _nome_do_corpo(e["corpo"]) or f.get("nome_cliente", ""),
+                "uc_aneel": uc_aneel, "vencimento": pdf.get("data_vencimento", ""),
+                "valor": pdf.get("valor_total", ""), "consumo": pdf.get("kwh_total_consumo", ""),
+                "caixa": e["caixa"],
+            })
             if enviar:
-                # chave de casamento: a UC que o CRM usa (veio da consulta de pendentes) casa
-                # EXATO; a matrícula do anexo é só parte dela ("10"/"6" + matrícula + dígito),
-                # então mandar a UC do CRM evita o NAO_ENCONTRADO. uc_aneel reforça.
-                chaves = {
-                    "concessionaria_alias": e["alias"],
-                    "matricula": f.get("uc") or e["matricula"],
-                    "uc_aneel": uc_aneel,
-                    "ano_mes_referencia": f.get("mes_referencia", ""),
-                }
-                mes_ref = f.get("mes_referencia", "")
                 dados = _dados_para_crm(pdf, uc_aneel, mes_ref)
                 ch = memoria_email.chave(e["alias"], e["matricula"], mes_ref)
-                # a chave 'matricula' enviada (UC do CRM) é a que volta no retorno -> caso por ela+mês.
                 envios.append((ch, chaves["matricula"], mes_ref, rotulo,
                                montar_item_email(chaves, dados, pdf_path=caminho)))
         except Exception as ex:
             print(f"  [ERRO] {rotulo}: {type(ex).__name__}: {ex}")
 
-    enviados = _enviar_lote(envios, enviar)
+    enviados, por = _enviar_lote(envios, enviar)
+    _relatar(registros, por, enviar)
 
     print(f"\nRESUMO: {len(casados)} casada(s)"
           f"{f', {enviados} OK no CRM' if enviar else ' (ensaio, nada enviado)'}.")
@@ -280,9 +314,9 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
     print()
 
     pasta = config.pasta_faturas_de("ENERGISA_EMAIL")
-    envios = []
+    envios, registros = [], []
     for e, mes_ref, ch in jobs:
-        rotulo = f"{e['alias']} matr={e['matricula']} {mes_ref} ({e['nome'] if 'nome' in e else ''})".strip()
+        rotulo = f"{e['alias']} matr={e['matricula']} {mes_ref}"
         try:
             pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
             alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
@@ -294,6 +328,12 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
             uc_aneel = _uc_aneel_do_corpo(e["corpo"])
             print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
+            registros.append({
+                "alias": e["alias"], "matricula": e["matricula"], "matricula_envio": e["matricula"],
+                "mes": mes_ref, "nome": _nome_do_corpo(e["corpo"]), "uc_aneel": uc_aneel,
+                "vencimento": pdf.get("data_vencimento", ""), "valor": pdf.get("valor_total", ""),
+                "consumo": pdf.get("kwh_total_consumo", ""), "caixa": e["caixa"],
+            })
             if enviar:
                 chaves = {
                     "concessionaria_alias": e["alias"],
@@ -307,7 +347,8 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
         except Exception as ex:
             print(f"  [ERRO] {rotulo}: {type(ex).__name__}: {ex}")
 
-    enviados = _enviar_lote(envios, enviar)
+    enviados, por = _enviar_lote(envios, enviar)
+    _relatar(registros, por, enviar)
     print(f"\nRESUMO (manda tudo): {len(jobs)} processada(s)"
           f"{f', {enviados} OK no CRM' if enviar else ' (ensaio, nada enviado)'}.")
 
