@@ -261,10 +261,13 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
     emails = coletar_emails(caixas, dias)
     print(f"[email] {len(emails)} anexo(s) de fatura coletado(s).")
 
-    jobs, pulados = [], 0
+    jobs, pulados, vistos = [], 0, set()
     for e in emails:
         mes_ref = f"{e['mes_num']:02d}/{e['mes_ano']}" if e.get("mes_num") else ""
         ch = memoria_email.chave(e["alias"], e["matricula"], mes_ref)
+        if ch in vistos:                 # mesmo CC em 2 caixas -> processa 1x só
+            continue
+        vistos.add(ch)
         if enviar and memoria_email.em_espera(ch):
             pulados += 1
             continue
