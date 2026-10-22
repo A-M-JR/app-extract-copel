@@ -4,13 +4,18 @@ title Instalacao - Robo de Faturas
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 echo ============================================================
-echo   INSTALACAO DO ROBO DE FATURAS  (passo a passo)
-echo   Responda S para fazer o passo, N para pular.
+echo   INSTALADOR DO ROBO DE FATURAS
+echo   Este e o UNICO instalador que voce precisa rodar.
+echo   Ele prepara o ambiente e faz as perguntas abaixo (S/N).
 echo ============================================================
 echo.
 
-set /p R1="[1/4] Instalar Python/Chrome e as dependencias do robo? (S/N): "
-if /i "!R1!"=="S" call "%~dp0instalar_dependencias.bat"
+REM [1/4] SEMPRE prepara o ambiente (.venv + dependencias). As perguntas de
+REM       Python/Chrome ficam dentro deste passo. A .venv copiada de outra
+REM       maquina e recriada aqui automaticamente.
+echo [1/4] Preparando o robo (Python/Chrome opcionais + dependencias)...
+call "%~dp0instalar_dependencias.bat" --sem-pausa
+if errorlevel 1 ( echo [ERRO] a preparacao do ambiente falhou - veja as mensagens acima. & pause & exit /b 1 )
 
 echo.
 set /p R2="[2/4] Criar o atalho 'Robo de Faturas' na Area de Trabalho? (S/N): "
