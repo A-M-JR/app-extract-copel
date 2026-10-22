@@ -28,7 +28,7 @@ import email_graph
 import memoria_email
 from api_faturas import (buscar_faturas, montar_item_email, enviar_leituras_email,
                          consultar_titular)
-from fatura_pdf import extrair_dados
+from fatura_pdf import extrair_dados, ler_uc_antiga
 from planilha import normalizar_mes
 
 
@@ -361,10 +361,13 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
                 print(f"  [sem anexo] {rotulo}")
                 continue
             pdf = extrair_dados(caminho)
+            # chave de casamento: se o PDF traz a migração ANEEL, o CRM ainda pode ter a UC
+            # ANTIGA -> usa ela; a nova vai como uc_aneel (pra quando o CRM migrar).
+            match_key = ler_uc_antiga(caminho) or e["matricula"]
             print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
             registros.append({
-                "alias": e["alias"], "matricula": e["matricula"], "matricula_envio": e["matricula"],
+                "alias": e["alias"], "matricula": match_key, "matricula_envio": match_key,
                 "mes": mes_ref, "nome": _nome_do_corpo(e["corpo"]), "uc_aneel": uc_aneel,
                 "vencimento": pdf.get("data_vencimento", ""), "valor": pdf.get("valor_total", ""),
                 "consumo": pdf.get("kwh_total_consumo", ""), "caixa": e["caixa"],
@@ -372,12 +375,12 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
             if enviar:
                 chaves = {
                     "concessionaria_alias": e["alias"],
-                    "matricula": e["matricula"],      # matrícula do anexo (CRM casa por substring)
-                    "uc_aneel": uc_aneel,
+                    "matricula": match_key,           # UC antiga (se migrou) ou a do e-mail
+                    "uc_aneel": uc_aneel,             # UC nova (ANEEL)
                     "ano_mes_referencia": mes_ref,
                 }
                 dados = _dados_para_crm(pdf, uc_aneel, mes_ref)
-                envios.append((ch, e["matricula"], mes_ref, rotulo,
+                envios.append((ch, match_key, mes_ref, rotulo,
                                montar_item_email(chaves, dados, pdf_path=caminho)))
         except Exception as ex:
             print(f"  [ERRO] {rotulo}: {type(ex).__name__}: {ex}")

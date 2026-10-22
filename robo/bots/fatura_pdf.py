@@ -310,6 +310,16 @@ def ler_uc(pdf_path: str) -> str:
     return ""
 
 
+def ler_uc_antiga(pdf_path: str) -> str:
+    """UC no formato ANTIGO, quando o PDF traz o comunicado da migração ANEEL (REN
+    1095/2024): 'Sua UC antiga era 49106289 e seu novo número...'. O CRM pode ainda ter
+    a UC antiga, então usamos ela pra casar. '' se não houver comunicado."""
+    with pdfplumber.open(pdf_path) as pdf:
+        todas = " ".join(" ".join(_linhas(pg)) for pg in pdf.pages)
+    m = re.search(r"UC\s+antiga\s+era\s*(\d{5,})", todas, re.I)
+    return m.group(1) if m else ""
+
+
 def extrair_dados(pdf_path: str) -> dict:
     with pdfplumber.open(pdf_path) as pdf:
         pg0 = " ".join(_linhas(pdf.pages[0]))
