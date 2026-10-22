@@ -152,6 +152,33 @@ def baixar_pdfs(caixa: str, msg_id: str) -> list[tuple[str, bytes]]:
     return saida
 
 
+def pdf_sem_senha(conteudo: bytes, senha: str | None) -> bytes:
+    """Devolve o PDF SEM senha. Se não estiver protegido (ou senha vazia), devolve igual.
+    Usado pra COPEL/Enel (PDF protegido pelos 4 primeiros dígitos do CPF/CNPJ) — o CRM
+    recebe o PDF já aberto."""
+    import io
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:
+        return conteudo
+    try:
+        r = PdfReader(io.BytesIO(conteudo))
+        if not r.is_encrypted:
+            return conteudo
+        if not senha or r.decrypt(senha) == 0:
+            raise GraphError("senha do PDF incorreta ou ausente")
+        w = PdfWriter()
+        for pg in r.pages:
+            w.add_page(pg)
+        buf = io.BytesIO()
+        w.write(buf)
+        return buf.getvalue()
+    except GraphError:
+        raise
+    except Exception as e:
+        raise GraphError(f"falha ao abrir o PDF protegido: {type(e).__name__}: {e}")
+
+
 def salvar(conteudo: bytes, pasta, nome: str) -> str:
     """Grava o PDF numa pasta e devolve o caminho."""
     pasta = _Path(pasta)

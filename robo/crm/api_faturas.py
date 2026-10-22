@@ -33,6 +33,7 @@ import _caminhos  # noqa: E402,F401  (permite rodar este arquivo direto)
 
 import base64
 import os
+import re
 import time
 
 import requests
@@ -291,6 +292,31 @@ def enviar_leituras_email(itens: list[dict], timeout: int | None = None,
                            f"Início: {corpo!r}")
         resultados.extend((j.get("data") or {}).get("resultados") or j.get("resultados") or [])
     return resultados
+
+
+def consultar_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
+                      timeout: int | None = None) -> dict:
+    """GET /ucs/titular — devolve o titular da UC (tipo_pessoa, documento só dígitos, nome).
+    Usado p/ a senha do PDF (COPEL/Enel = 4 primeiros dígitos do CPF/CNPJ). Dict vazio se
+    não achar ou sem escopo."""
+    timeout = getattr(config, "API_TIMEOUT_S", 30) if timeout is None else timeout
+    url = _base_url() + getattr(config, "API_ROTA_TITULAR", "/api/v1/ucs/titular")
+    headers = {"Authorization": f"Bearer {_token()}", "Accept": "application/json"}
+    params = {k: v for k, v in (("matricula", matricula), ("uc_aneel", uc_aneel),
+                                ("concessionaria_alias", alias)) if v}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=timeout)
+        if not r.ok:
+            return {}
+        return ((r.json() or {}).get("data") or {}).get("titular") or {}
+    except Exception:
+        return {}
+
+
+def senha_pdf_por_titular(matricula: str = "", uc_aneel: str = "", alias: str = "") -> str:
+    """Os 4 primeiros dígitos do documento (CPF/CNPJ) do titular — senha do PDF."""
+    doc = re.sub(r"\D", "", str(consultar_titular(matricula, uc_aneel, alias).get("documento", "")))
+    return doc[:4]
 
 
 if __name__ == "__main__":

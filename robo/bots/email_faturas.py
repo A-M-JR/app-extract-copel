@@ -26,7 +26,8 @@ import _caminhos  # noqa: E402,F401  (permite rodar este arquivo direto)
 import config
 import email_graph
 import memoria_email
-from api_faturas import buscar_faturas, montar_item_email, enviar_leituras_email
+from api_faturas import (buscar_faturas, montar_item_email, enviar_leituras_email,
+                         consultar_titular)
 from fatura_pdf import extrair_dados
 from planilha import normalizar_mes
 
@@ -55,23 +56,42 @@ def _nome_do_corpo(corpo: str) -> str:
 _RX_NOME = re.compile(r"Matricula-0*(\d+)-(\d{2})-(\d{4})", re.I)
 
 
-def _matricula_mes_do_nome(nome: str):
-    """(matrícula, mes, ano) a partir de 'ENERGISA..-Fat-Matricula-0001402094-10-2026.PDF'."""
-    m = _RX_NOME.search(nome or "")
-    if not m:
-        return ("", None, None)
-    return (m.group(1), int(m.group(2)), int(m.group(3)))
+def _identificar(de: str, assunto: str, corpo: str, nome: str) -> dict | None:
+    """Reconhece se (remetente + anexo + corpo) é uma fatura e de qual concessionária.
+    Devolve a receita: alias (CRM), matricula (chave de casamento), mes_num/mes_ano,
+    senha ('titular' quando o PDF é protegido pelos 4 díg do CPF/CNPJ). None = não é fatura.
 
-
-def _alias_do_remetente(de: str) -> str:
-    """faturasonlineems..@energisa -> EMS ; ...emt..-> EMT."""
-    m = re.search(r"faturasonline(em[st]|[a-z]{2,4})\d*@", de.lower())
-    return (m.group(1).upper() if m else "")
+    Pra ADICIONAR uma concessionária: acrescente um ramo aqui (como pega a UC/matrícula e o
+    mês — do nome do anexo, do corpo ou do assunto) e o alias dela no CRM."""
+    de = (de or "").lower()
+    # --- ENERGISA MS/MT: matrícula + mês no NOME do anexo; sem senha ---
+    m = re.search(r"faturasonline(em[st])\d*@energisa\.com\.br", de)
+    if m:
+        mm = _RX_NOME.search(nome or "")
+        if not mm:
+            return None
+        return {"alias": m.group(1).upper(), "matricula": mm.group(1),
+                "mes_num": int(mm.group(2)), "mes_ano": int(mm.group(3)), "senha": None}
+    # --- COPEL: PDF com senha = 4 díg do CPF/CNPJ (via /ucs/titular).
+    # LIMITAÇÃO: a maioria dos e-mails COPEL NÃO traz a UC no corpo (só nome+mês+valor);
+    # a UC só está DENTRO do PDF, que precisa da senha pra abrir. Então por enquanto só
+    # reconhecemos os (raros) que trazem "Unidade Consumidora" no corpo. Pra cobrir todos,
+    # falta definir a chave (casar por nome+mês com a fila do CRM, ou o CRM resolver pelo
+    # número da fatura "01-..." do assunto). Ver conversa de 22/10.
+    if "faturamento.copel.com" in de:
+        txt = _strip_html(corpo)
+        uc = re.search(r"Unidade Consumidora:?\s*(\d{4,})", txt, re.I)
+        ref = re.search(r"[Mm][êe]s de refer[êe]ncia:?\s*(\d{1,2})/(\d{4})", txt, re.I)
+        if not (uc and ref):
+            return None
+        return {"alias": "CDI", "matricula": uc.group(1),
+                "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)), "senha": "titular"}
+    return None
 
 
 def coletar_emails(caixas, dias):
-    """Lista os anexos de fatura (nome -> matrícula/mês/alias) das caixas LEGÍVEIS.
-    Não baixa o PDF ainda (só os nomes). Caixa que der erro (ex.: 403) é pulada."""
+    """Lista as faturas (de qualquer concessionária reconhecida em _identificar) das caixas
+    LEGÍVEIS. Não baixa o PDF ainda (só os nomes). Caixa que der erro (ex.: 403) é pulada."""
     itens = []
     for caixa in caixas:
         try:
@@ -81,25 +101,20 @@ def coletar_emails(caixas, dias):
             continue
         n = 0
         for m in msgs:
-            de = m["de"].lower()
-            if not any(d in de for d in config.EMAIL_REMETENTES_FATURA):
-                continue
-            alias = _alias_do_remetente(de)
             try:
                 nomes = email_graph.nomes_anexos(caixa, m["id"])
             except Exception:
                 nomes = []
             for nome in nomes:
-                mat, mes, ano = _matricula_mes_do_nome(nome)
-                if not mat:
+                rec = _identificar(m["de"], m["assunto"], m["corpo"], nome)
+                if not rec:
                     continue
                 itens.append({
-                    "caixa": caixa, "msg_id": m["id"], "de": de, "assunto": m["assunto"],
-                    "nome": nome, "matricula": mat, "mes_num": mes, "mes_ano": ano,
-                    "alias": alias, "corpo": m["corpo"],
+                    "caixa": caixa, "msg_id": m["id"], "de": m["de"].lower(),
+                    "assunto": m["assunto"], "nome": nome, "corpo": m["corpo"], **rec,
                 })
                 n += 1
-        print(f"   [email] {caixa}: {n} anexo(s) de fatura.")
+        print(f"   [email] {caixa}: {n} fatura(s).")
     return itens
 
 
@@ -134,6 +149,23 @@ def _dados_para_crm(pdf: dict, uc_aneel: str, mes_ref: str) -> dict:
         "kwh_total_consumo": pdf.get("kwh_total_consumo", ""),
         # codigo_barras não vem do PDF (é QR/imagem) -> fica vazio.
     }
+
+
+def _preparar_pdf(e: dict, pasta):
+    """Baixa o PDF da fatura, remove a senha se precisar (via /ucs/titular) e salva.
+    Devolve (caminho, uc_aneel). uc_aneel vem do corpo (Energisa) ou do titular (COPEL)."""
+    pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
+    alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
+    if not alvo:
+        return None, ""
+    conteudo = alvo[1]
+    uc_aneel = _uc_aneel_do_corpo(e["corpo"])
+    if e.get("senha") == "titular":
+        tit = consultar_titular(matricula=e.get("matricula", ""), alias=e.get("alias", ""))
+        senha = re.sub(r"\D", "", str(tit.get("documento", "")))[:4]
+        conteudo = email_graph.pdf_sem_senha(conteudo, senha)   # abre e remove a senha
+        uc_aneel = uc_aneel or re.sub(r"\D", "", str(tit.get("uc_aneel", "")))
+    return email_graph.salvar(conteudo, pasta, alvo[0]), uc_aneel
 
 
 def _enviar_lote(envios, enviar) -> tuple[int, dict]:
@@ -233,14 +265,11 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
         rotulo = f"id={f['id_fatura']} UC={f['uc']} {f['mes_referencia']} ({e['alias']})"
         mes_ref = f.get("mes_referencia", "")
         try:
-            pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
-            alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
-            if not alvo:
+            caminho, uc_aneel = _preparar_pdf(e, pasta)
+            if not caminho:
                 print(f"  [sem anexo] {rotulo}")
                 continue
-            caminho = email_graph.salvar(alvo[1], pasta, alvo[0])
             pdf = extrair_dados(caminho)
-            uc_aneel = _uc_aneel_do_corpo(e["corpo"])
             print(f"  [lido] {rotulo}")
             print(f"       anexo={e['nome']}  uc_aneel(corpo)={uc_aneel or '-'}")
             print(f"       venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
@@ -318,14 +347,11 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
     for e, mes_ref, ch in jobs:
         rotulo = f"{e['alias']} matr={e['matricula']} {mes_ref}"
         try:
-            pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
-            alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
-            if not alvo:
+            caminho, uc_aneel = _preparar_pdf(e, pasta)
+            if not caminho:
                 print(f"  [sem anexo] {rotulo}")
                 continue
-            caminho = email_graph.salvar(alvo[1], pasta, alvo[0])
             pdf = extrair_dados(caminho)
-            uc_aneel = _uc_aneel_do_corpo(e["corpo"])
             print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
             registros.append({

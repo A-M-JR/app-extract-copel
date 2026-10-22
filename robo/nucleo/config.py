@@ -134,8 +134,9 @@ EMAIL_LOTE       = 5             # faturas (com PDF) por POST no endpoint de e-m
 EMAIL_TIMEOUT_S  = 180           # timeout do POST (upload de vários PDFs demora)
 # domínios/remetentes que mandam fatura (p/ filtrar o que é fatura do resto)
 EMAIL_REMETENTES_FATURA = ["energisa.com.br", "copel.com", "celesc.com.br", "enel.com"]
-# aliases do CRM cujas faturas chegam por E-MAIL (não por portal). EMS/EMT prontos.
-EMAIL_ALIASES = ["EMS", "EMT"]
+# aliases do CRM cujas faturas chegam por E-MAIL (usado no fluxo por pendentes).
+# EMS/EMT (Energisa) e CDI (COPEL) prontos. (No modo --tudo o alias não filtra.)
+EMAIL_ALIASES = ["EMS", "EMT", "CDI"]
 
 # --- Navegador ------------------------------------------------------------
 # Usa o Google Chrome já instalado na máquina (não baixa o Chromium do Playwright).
