@@ -28,7 +28,7 @@ import email_graph
 import memoria_email
 from api_faturas import (buscar_faturas, montar_item_email, enviar_leituras_email,
                          consultar_titular)
-from fatura_pdf import extrair_dados, ler_uc_antiga
+from fatura_pdf import extrair_dados, ler_uc, ler_uc_antiga
 from planilha import normalizar_mes
 
 
@@ -81,20 +81,19 @@ def _identificar(de: str, assunto: str, corpo: str, nome: str) -> dict | None:
             return None
         return {"alias": "CLC", "matricula": re.sub(r"\D", "", uc.group(1)),
                 "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)), "senha": None}
-    # --- COPEL: PDF com senha = 4 díg do CPF/CNPJ (via /ucs/titular).
-    # LIMITAÇÃO: a maioria dos e-mails COPEL NÃO traz a UC no corpo (só nome+mês+valor);
-    # a UC só está DENTRO do PDF, que precisa da senha pra abrir. Então por enquanto só
-    # reconhecemos os (raros) que trazem "Unidade Consumidora" no corpo. Pra cobrir todos,
-    # falta definir a chave (casar por nome+mês com a fila do CRM, ou o CRM resolver pelo
-    # número da fatura "01-..." do assunto). Ver conversa de 22/10.
+    # --- COPEL: o e-mail só traz o NOME do cliente ("Prezado X") + mês. PDF com senha =
+    # 4 díg do CPF/CNPJ. Fluxo: nome -> /ucs/titular -> documento (senha) -> abre o PDF ->
+    # a UC vem de DENTRO do PDF (ler_uc). matricula vazia aqui (resolvida após abrir).
     if "faturamento.copel.com" in de:
         txt = _strip_html(corpo)
-        uc = re.search(r"Unidade Consumidora:?\s*(\d{4,})", txt, re.I)
+        nome = (re.search(r"Prezad[oa]\s+(.+?)\s+Endere", txt, re.I)
+                or re.search(r"Prezad[oa]\s+(.+?)[\.,]", txt, re.I))
         ref = re.search(r"[Mm][êe]s de refer[êe]ncia:?\s*(\d{1,2})/(\d{4})", txt, re.I)
-        if not (uc and ref):
+        if not (nome and ref):
             return None
-        return {"alias": "CDI", "matricula": uc.group(1),
-                "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)), "senha": "titular"}
+        return {"alias": "CDI", "nome": nome.group(1).strip(), "matricula": "",
+                "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)),
+                "senha": "titular_nome", "senha_digitos": 4}
     return None
 
 
@@ -169,9 +168,14 @@ def _preparar_pdf(e: dict, pasta):
         return None, ""
     conteudo = alvo[1]
     uc_aneel = _uc_aneel_do_corpo(e["corpo"])
-    if e.get("senha") == "titular":
-        tit = consultar_titular(matricula=e.get("matricula", ""), alias=e.get("alias", ""))
-        senha = re.sub(r"\D", "", str(tit.get("documento", "")))[:4]
+    tipo = e.get("senha")
+    if tipo in ("titular", "titular_nome"):
+        if tipo == "titular_nome":      # COPEL: o e-mail só tem o nome
+            tit = consultar_titular(nome=e.get("nome", ""), alias=e.get("alias", ""))
+        else:                           # outros: por matrícula/UC
+            tit = consultar_titular(matricula=e.get("matricula", ""), alias=e.get("alias", ""))
+        digitos = int(e.get("senha_digitos", 4))        # COPEL=4, Elektro=5
+        senha = re.sub(r"\D", "", str(tit.get("documento", "")))[:digitos]
         conteudo = email_graph.pdf_sem_senha(conteudo, senha)   # abre e remove a senha
         uc_aneel = uc_aneel or re.sub(r"\D", "", str(tit.get("uc_aneel", "")))
     return email_graph.salvar(conteudo, pasta, alvo[0]), uc_aneel
@@ -361,9 +365,9 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
                 print(f"  [sem anexo] {rotulo}")
                 continue
             pdf = extrair_dados(caminho)
-            # chave de casamento: se o PDF traz a migração ANEEL, o CRM ainda pode ter a UC
-            # ANTIGA -> usa ela; a nova vai como uc_aneel (pra quando o CRM migrar).
-            match_key = ler_uc_antiga(caminho) or e["matricula"]
+            # chave de casamento: UC antiga (se migrou ANEEL) -> matrícula do e-mail (Energisa/
+            # CELESC) -> UC de dentro do PDF (COPEL, que não traz a UC no e-mail).
+            match_key = ler_uc_antiga(caminho) or e.get("matricula") or ler_uc(caminho)
             print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
             registros.append({
