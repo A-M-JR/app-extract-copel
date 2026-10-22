@@ -289,6 +289,46 @@ def _extrair_energisa(full: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# NEOENERGIA ELEKTRO (DANF3E) — fatura de USINA (geração). kwh_injetado = GERAÇÃO.
+# --------------------------------------------------------------------------
+def _extrair_elektro(full: str) -> dict:
+    dados = _vazio()
+
+    dados["nota_fiscal"] = _busca(r"NOTA FISCAL\s*N[^\d]*(\d{5,})", full)
+
+    # Ref/venc/valor: "Fevereiro/2026 R$103,32 26/02/2026" (mês por extenso + R$valor + venc)
+    m = re.search(r"[A-Za-zçÇ]+/\d{4}\s+(-?)\s*R\$\s*(-?)\s*([\d.]*\d,\d{2})\s+(\d{2}/\d{2}/\d{4})",
+                  full)
+    if m:
+        negativo = "-" in (m.group(1) + m.group(2))
+        dados["valor_total"] = "0,00" if negativo else m.group(3)
+        dados["data_vencimento"] = m.group(4)
+
+    # Leituras: anterior, atual, nº dias, próxima
+    m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+\d{1,3}\s+(\d{2}/\d{2}/\d{4})", full)
+    if m:
+        dados["leitura_anterior"] = m.group(1)
+        dados["leitura_atual"] = m.group(2)
+        dados["proxima_leitura"] = m.group(3)
+
+    # Consumo: "CONSUMO TE kWh 100 ..."
+    consumo = _busca(r"CONSUMO\s+TE\s+kWh\s+([\d.]+(?:,\d+)?)", full)
+    dados["kwh_total_consumo"] = _fmt_kwh(_num_br(consumo)) if consumo else "0"
+
+    # GERAÇÃO (injeção da usina) — OBRIGATÓRIO p/ usina.
+    # "AG0039240 GERAC kWh TP 4834 5188 40 14160" -> último número = gerado no período.
+    ger = _busca(r"GERAC\s+kWh\s+\S+\s+\d+\s+\d+\s+\d+\s+([\d.]+)", full)
+    dados["kwh_injetado"] = _fmt_kwh(_num_br(ger)) if ger else ""
+
+    # Saldo SCEE (mini/micro geração): "... Todos os Periodos 14160"
+    dados["saldo_credito_todos_periodos"] = _busca(r"Todos os Per[íi]odos\s+([\d.]+)", full)
+
+    dados["debito_automatico"] = bool(
+        re.search(r"FATURA ARRECADADA|N\S?O RECEBER", full, re.I))
+    return dados
+
+
+# --------------------------------------------------------------------------
 # Dispatcher: detecta a concessionária pelo texto e roteia
 # --------------------------------------------------------------------------
 def ler_uc(pdf_path: str) -> str:
@@ -329,6 +369,10 @@ def extrair_dados(pdf_path: str) -> dict:
         return _extrair_celesc(todas)
     if re.search(r"\benergisa\b", pg0, re.I):
         return _extrair_energisa(todas)
+    # Neoenergia Elektro (usina): não escreve "ELEKTRO" no texto -> detecta pelo CNPJ da
+    # distribuidora (02.328.280/0001-97) ou pela linha de GERAÇÃO da mini/micro geração.
+    if re.search(r"02\.?328\.?280[/.]?0001", todas) or re.search(r"GERAC\s+kWh", todas, re.I):
+        return _extrair_elektro(todas)
     if re.search(r"\bRGE\b|rge-rs", pg0, re.I):   # COPEL/RGE seguem só a pág. 1 (validado)
         return _extrair_rge(pg0)
     return _extrair_copel(pg0)
