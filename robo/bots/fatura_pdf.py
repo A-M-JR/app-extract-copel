@@ -291,6 +291,25 @@ def _extrair_energisa(full: str) -> dict:
 # --------------------------------------------------------------------------
 # Dispatcher: detecta a concessionária pelo texto e roteia
 # --------------------------------------------------------------------------
+def ler_uc(pdf_path: str) -> str:
+    """Lê o número da UC de DENTRO do PDF (só dígitos). Usado quando o e-mail não traz a
+    UC (ex.: COPEL) — abre o PDF e pega a 'Unidade Consumidora' / 'Número da UC'."""
+    with pdfplumber.open(pdf_path) as pdf:
+        full = " ".join(_linhas(pdf.pages[0]))
+    for padrao in (
+        # COPEL: rodapé "UC MM/AAAA DD/MM/AAAA R$valor"
+        r"(\d{6,})\s+\d{1,2}/\d{4}\s+\d{2}/\d{2}/\d{4}\s+R?\$",
+        # COPEL: "Nome: <nome> <UC> Endereço:"
+        r"Nome:.*?\s(\d{6,})\s+Endere",
+        r"N[úu]mero da UC[:\s]+([\d.\-/ ]{6,})",
+        r"Unidade Consumidora[:\s]+([\d.\-/ ]{6,})",
+    ):
+        m = re.search(padrao, full, re.I)
+        if m:
+            return re.sub(r"\D", "", m.group(1))
+    return ""
+
+
 def extrair_dados(pdf_path: str) -> dict:
     with pdfplumber.open(pdf_path) as pdf:
         pg0 = " ".join(_linhas(pdf.pages[0]))

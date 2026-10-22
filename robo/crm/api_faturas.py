@@ -295,15 +295,15 @@ def enviar_leituras_email(itens: list[dict], timeout: int | None = None,
 
 
 def consultar_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
-                      timeout: int | None = None) -> dict:
+                      nome: str = "", timeout: int | None = None) -> dict:
     """GET /ucs/titular — devolve o titular da UC (tipo_pessoa, documento só dígitos, nome).
-    Usado p/ a senha do PDF (COPEL/Enel = 4 primeiros dígitos do CPF/CNPJ). Dict vazio se
-    não achar ou sem escopo."""
+    Usado p/ a senha do PDF (COPEL/Enel = 4 primeiros dígitos do CPF/CNPJ). Pode buscar por
+    matricula, uc_aneel OU nome (COPEL por e-mail só tem o nome). Dict vazio se não achar."""
     timeout = getattr(config, "API_TIMEOUT_S", 30) if timeout is None else timeout
     url = _base_url() + getattr(config, "API_ROTA_TITULAR", "/api/v1/ucs/titular")
     headers = {"Authorization": f"Bearer {_token()}", "Accept": "application/json"}
     params = {k: v for k, v in (("matricula", matricula), ("uc_aneel", uc_aneel),
-                                ("concessionaria_alias", alias)) if v}
+                                ("nome", nome), ("concessionaria_alias", alias)) if v}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=timeout)
         if not r.ok:
@@ -313,9 +313,11 @@ def consultar_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
         return {}
 
 
-def senha_pdf_por_titular(matricula: str = "", uc_aneel: str = "", alias: str = "") -> str:
+def senha_pdf_por_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
+                          nome: str = "") -> str:
     """Os 4 primeiros dígitos do documento (CPF/CNPJ) do titular — senha do PDF."""
-    doc = re.sub(r"\D", "", str(consultar_titular(matricula, uc_aneel, alias).get("documento", "")))
+    doc = re.sub(r"\D", "",
+                 str(consultar_titular(matricula, uc_aneel, alias, nome).get("documento", "")))
     return doc[:4]
 
 
