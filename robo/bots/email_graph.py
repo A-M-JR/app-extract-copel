@@ -78,37 +78,54 @@ def _get(url: str, timeout: int = 30) -> dict:
     return r.json()
 
 
+def _nomes_pdf_de(anexos: list) -> list[str]:
+    """Nomes dos anexos PDF a partir da lista de attachments (do $expand)."""
+    nomes = []
+    for a in anexos or []:
+        nome = (a.get("name") or "").strip()
+        tipo = (a.get("contentType") or "").lower()
+        if nome.lower().endswith(".pdf") or "pdf" in tipo:
+            nomes.append(nome)
+    return nomes
+
+
 def listar_mensagens(caixa: str, desde_dias: int = 30, so_com_anexo: bool = True,
-                     max_msgs: int = 200) -> list[dict]:
+                     max_msgs: int = 200, com_anexos: bool = False) -> list[dict]:
     """Mensagens da Caixa de Entrada da `caixa`, mais recentes primeiro.
-    Devolve dicts com id, de, assunto, recebido, tem_anexo e corpo (texto/HTML)."""
+    Devolve dicts com id, de, assunto, recebido, tem_anexo e corpo (texto/HTML).
+    com_anexos=True usa $expand=attachments pra trazer os NOMES dos anexos JUNTO na
+    listagem (1 chamada por página, em vez de 1 por mensagem) -> cada dict ganha 'anexos'."""
     desde = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=desde_dias)) \
         .strftime("%Y-%m-%dT%H:%M:%SZ")
     campos = "id,subject,from,receivedDateTime,hasAttachments,bodyPreview,body"
     filtro = f"receivedDateTime ge {desde}"
     if so_com_anexo:
         filtro = "hasAttachments eq true and " + filtro
-    url = (f"{GRAPH}/users/{caixa}/mailFolders/Inbox/messages"
-           f"?$select={campos}&$top=50&$filter={filtro}&$orderby=receivedDateTime desc")
+    # $expand traz name/contentType dos anexos (NÃO contentBytes -> leve). $top menor com
+    # expand (o Graph limita o payload por página).
+    expand = "&$expand=attachments($select=name,contentType)" if com_anexos else ""
+    top = 20 if com_anexos else 50
+    base = f"{GRAPH}/users/{caixa}/mailFolders/Inbox/messages?$select={campos}&$top={top}&$filter={filtro}"
 
     msgs: list[dict] = []
     try:
-        pagina = _get(url)
+        pagina = _get(base + "&$orderby=receivedDateTime desc" + expand)
     except GraphError:
-        # alguns tenants reclamam de $orderby junto do $filter -> tenta sem ordenar
-        url_sem = (f"{GRAPH}/users/{caixa}/mailFolders/Inbox/messages"
-                   f"?$select={campos}&$top=50&$filter={filtro}")
-        pagina = _get(url_sem)
+        # alguns tenants reclamam de $orderby junto do $filter/$expand -> tenta sem ordenar
+        pagina = _get(base + expand)
     while True:
         for m in pagina.get("value", []):
-            msgs.append({
+            d = {
                 "id": m.get("id"),
                 "de": (m.get("from") or {}).get("emailAddress", {}).get("address", ""),
                 "assunto": m.get("subject") or "",
                 "recebido": m.get("receivedDateTime") or "",
                 "tem_anexo": bool(m.get("hasAttachments")),
                 "corpo": (m.get("body") or {}).get("content", "") or m.get("bodyPreview", ""),
-            })
+            }
+            if com_anexos:
+                d["anexos"] = _nomes_pdf_de(m.get("attachments"))
+            msgs.append(d)
             if len(msgs) >= max_msgs:
                 return msgs
         prox = pagina.get("@odata.nextLink")

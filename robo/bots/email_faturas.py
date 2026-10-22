@@ -103,17 +103,14 @@ def coletar_emails(caixas, dias):
     itens = []
     for caixa in caixas:
         try:
-            msgs = email_graph.listar_mensagens(caixa, desde_dias=dias)
+            # $expand: traz os nomes dos anexos JUNTO (1 chamada/página, não 1/mensagem)
+            msgs = email_graph.listar_mensagens(caixa, desde_dias=dias, com_anexos=True)
         except Exception as e:
             print(f"   [email] caixa {caixa} indisponível ({type(e).__name__}) — pulando.")
             continue
         n = 0
         for m in msgs:
-            try:
-                nomes = email_graph.nomes_anexos(caixa, m["id"])
-            except Exception:
-                nomes = []
-            for nome in nomes:
+            for nome in m.get("anexos", []):
                 rec = _identificar(m["de"], m["assunto"], m["corpo"], nome)
                 if not rec:
                     continue
