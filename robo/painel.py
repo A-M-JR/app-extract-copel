@@ -567,6 +567,21 @@ class Painel(ctk.CTk):
         self.lbl_24h_estado = ctk.CTkLabel(lig, text="", font=self.f_small, text_color=MUTED)
         self.lbl_24h_estado.pack(side="left", padx=(14, 0))
 
+        # Levar a configuração pra outra máquina (NUC) + limpar cache
+        cc = self._card(s, "Configuração e manutenção",
+                        "Leve suas configurações pro NUC num arquivo só, e libere espaço "
+                        "apagando caches e arquivos antigos.")
+        mant = ctk.CTkFrame(cc, fg_color="transparent")
+        mant.grid(row=self._row, column=0, sticky="w", padx=14, pady=(2, 6))
+        self._btn_sec(mant, "📤  Exportar configuração", self._exportar_config).pack(side="left", padx=(4, 8))
+        self._btn_sec(mant, "📥  Importar configuração", self._importar_config).pack(side="left", padx=(0, 8))
+        self._btn_sec(mant, "🧹  Limpar cache", self._limpar_cache).pack(side="left")
+        ctk.CTkLabel(cc, text="Exportar gera um config_local.json portátil (leve pro NUC e importe, "
+                              "ou copie pra pasta do robô). “Limpar cache” não apaga faturas, "
+                              "configuração nem o login do Chrome.",
+                     font=self.f_small, text_color=MUTED, anchor="w", justify="left",
+                     wraplength=640).grid(row=self._row + 1, column=0, sticky="w", padx=18, pady=(0, 14))
+
         bs = ctk.CTkFrame(s, fg_color="transparent")
         bs.pack(pady=(2, 10))
         self._btn_salvar(bs, self._salvar_ajustes).pack(side="left", padx=6)
@@ -683,6 +698,121 @@ class Painel(ctk.CTk):
             messagebox.showinfo("24/7", "Modo 24/7 desligado.")
         else:
             messagebox.showerror("24/7", (out.stderr or out.stdout).strip()[-600:] or "falhou")
+
+    # ---------- configuração portátil (levar pro NUC) + limpar cache ----------
+    _CHAVES_SEGREDO = ("api_token", "plan_senha", "email_secret")
+
+    def _exportar_config(self):
+        """Grava um config_local.json PORTÁTIL: mesmos campos, mas com os segredos
+        em TEXTO PURO (DPAPI só abre na máquina de origem). Serve pra levar pro NUC."""
+        from tkinter import filedialog
+        import segredos
+        d = carregar_local()                      # o que está salvo em disco
+        if not d:
+            messagebox.showinfo("Exportar", "Ainda não há nada configurado pra exportar.\n"
+                                "Preencha e salve as abas (Conexão CRM / E-mail / Faturas) primeiro.")
+            return
+        for chave in self._CHAVES_SEGREDO:         # dpapi -> texto puro (portátil)
+            if d.get(chave):
+                d[chave] = segredos.revelar(d[chave])
+        if isinstance(d.get("email"), dict) and d["email"].get("senha"):
+            d["email"] = dict(d["email"])
+            d["email"]["senha"] = segredos.revelar(d["email"]["senha"])
+        dest = filedialog.asksaveasfilename(
+            title="Exportar configuração (portátil)", defaultextension=".json",
+            initialfile="config_local.json",
+            filetypes=[("Configuração (JSON)", "*.json"), ("Todos os arquivos", "*.*")])
+        if not dest:
+            return
+        try:
+            Path(dest).write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            messagebox.showerror("Exportar", str(e))
+            return
+        messagebox.showwarning(
+            "Exportado — guarde com cuidado",
+            f"Configuração salva em:\n{dest}\n\n"
+            "⚠ Os segredos (token e senhas) ficaram em TEXTO PURO pra funcionarem em outra "
+            "máquina. Guarde o arquivo em local seguro e não compartilhe.\n\n"
+            "No NUC: use “Importar configuração”, ou copie este arquivo pra pasta do robô com "
+            "o nome config_local.json. Ao salvar algo no painel do NUC, os segredos voltam a ser "
+            "criptografados lá.")
+
+    def _importar_config(self):
+        """Lê um config exportado e grava como config_local.json desta máquina,
+        re-criptografando os segredos com o DPAPI local (fica seguro aqui)."""
+        from tkinter import filedialog
+        import segredos
+        orig = filedialog.askopenfilename(
+            title="Importar configuração",
+            filetypes=[("Configuração (JSON)", "*.json"), ("Todos os arquivos", "*.*")])
+        if not orig:
+            return
+        try:
+            d = json.loads(Path(orig).read_text(encoding="utf-8"))
+            if not isinstance(d, dict):
+                raise ValueError("o arquivo não é uma configuração válida")
+        except Exception as e:
+            messagebox.showerror("Importar", f"Não consegui ler o arquivo:\n{e}")
+            return
+        if not messagebox.askyesno(
+                "Importar configuração",
+                "Isto vai SUBSTITUIR a configuração atual deste computador pela do arquivo.\n\n"
+                "Continuar?"):
+            return
+        for chave in self._CHAVES_SEGREDO:         # texto puro -> DPAPI desta máquina
+            if d.get(chave):
+                d[chave] = segredos.proteger(str(d[chave]))
+        if isinstance(d.get("email"), dict) and d["email"].get("senha"):
+            d["email"]["senha"] = segredos.proteger(str(d["email"]["senha"]))
+        salvar_local(d)
+        self.local = d
+        messagebox.showinfo("Importado", "Configuração importada e protegida nesta máquina.\n\n"
+                            "Feche e abra o painel pra recarregar os campos.")
+
+    def _limpar_cache(self):
+        """Libera espaço: apaga caches e arquivos antigos (reusa nucleo/limpeza.py) e o
+        bytecode do Python. NÃO apaga faturas, config nem o login/Buster do Chrome."""
+        if not messagebox.askyesno(
+                "Limpar cache",
+                "Apaga os caches e arquivos antigos: prints de erro, diagnósticos, logs e "
+                "relatórios vencidos, e os caches do Chrome do robô (inclui o modelo de IA ~4 GB).\n\n"
+                "NÃO apaga: faturas em PDF, sua configuração, nem o login/Buster do Chrome.\n\n"
+                "Continuar?"):
+            return
+        import shutil
+        for d in ROBO.rglob("__pycache__"):        # bytecode do Python (sempre seguro)
+            try:
+                shutil.rmtree(d)
+            except Exception:
+                pass
+        try:
+            self.configure(cursor="watch")
+            self.update()
+        except Exception:
+            pass
+        liberado = 0
+        try:
+            out = subprocess.run(
+                [sys.executable, "-c",
+                 "import _caminhos, limpeza; print(limpeza.limpar(forcar=True, verbose=True))"],
+                cwd=str(ROBO), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=180)
+            linhas = [l for l in (out.stdout or "").strip().splitlines() if l.strip()]
+            if linhas and linhas[-1].strip().isdigit():
+                liberado = int(linhas[-1].strip())
+        except Exception as e:
+            try:
+                self.configure(cursor="")
+            except Exception:
+                pass
+            messagebox.showerror("Limpar cache", str(e))
+            return
+        try:
+            self.configure(cursor="")
+        except Exception:
+            pass
+        messagebox.showinfo("Limpar cache", f"Pronto! Liberados {liberado / 1e6:.0f} MB.")
 
     # ---------- aba E-mail ----------
     _QUANDO = {
