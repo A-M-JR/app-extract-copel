@@ -403,6 +403,7 @@ class Painel(ctk.CTk):
             row=1, column=0, sticky="w", padx=18, pady=(2, 8))
         self._grade_botoes(res, [
             ("📊  Abrir relatório", self._abrir_relatorio),
+            ("📧  Relatório de e-mail", self._abrir_relatorio_email),
             ("📁  Abrir pasta", self._abrir_pasta),
             ("🧾  Ver log", self._abrir_log_arquivo),
             ("🔎  Consulta CRM", self._abrir_consulta_crm),
@@ -1048,6 +1049,27 @@ class Painel(ctk.CTk):
             return
         try:
             os.startfile(r)
+        except Exception as e:
+            messagebox.showerror("Erro", str(e))
+
+    def _abrir_relatorio_email(self):
+        """Abre sempre o último relatório do fluxo por E-MAIL (resultado_email_*)."""
+        def preferir_html(caminho):
+            h = Path(caminho).with_suffix(".html")
+            return str(h) if h.exists() else str(caminho)
+        try:
+            arqs = sorted(Path(config.PASTA_EXTRACAO).glob("resultado_email_*.xlsx"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            arqs = []
+        if not arqs:
+            messagebox.showinfo(
+                "Sem relatório de e-mail",
+                "Ainda não há relatório do fluxo por e-mail.\n"
+                "Rode o \"📧 Rodar e-mail\" primeiro.")
+            return
+        try:
+            os.startfile(preferir_html(arqs[0]))
         except Exception as e:
             messagebox.showerror("Erro", str(e))
 

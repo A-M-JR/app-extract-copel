@@ -265,6 +265,20 @@ class CopelBot:
         except Exception:
             return False
 
+    def _ativar_cadastro(self) -> bool:
+        """True se a COPEL caiu na tela 'Ativar cadastro' (a conta existe mas o cadastro
+        na agência virtual nunca foi concluído). Não dá pra logar assim -> FALHA_LOGIN
+        (não re-tenta; segue pro próximo). NÃO tentamos ativar automaticamente: a ativação
+        pede dados/validação do titular e é um passo manual."""
+        try:
+            loc = self.page.get_by_text(re.compile(
+                r"ativar\s+cadastro|ativa[çc][ãa]o\s+de?\s*cadastro|"
+                r"cadastro.{0,20}n[ãa]o.{0,10}(ativ|conclu)|"
+                r"conclua?\s+(seu|o)\s+cadastro|finalizar?\s+(seu\s+)?cadastro", re.I))
+            return loc.count() > 0 and loc.first.is_visible()
+        except Exception:
+            return False
+
     def _marcar_nao_sou_robo(self) -> bool:
         """Clica o checkbox 'não sou robô' (dentro do iframe do reCAPTCHA), pra disparar
         o desafio que o screen_watcher vai resolver. Espera o iframe carregar."""
@@ -357,6 +371,12 @@ class CopelBot:
                 return
             if self._erro_login():
                 raise CredencialInvalida("Login recusado pela COPEL (senha inválida / conta bloqueada).")
+            if self._ativar_cadastro():
+                # conta existe mas o cadastro na agência virtual não foi concluído -> não loga.
+                # FALHA_LOGIN (não re-tenta); a ativação é um passo MANUAL do titular.
+                raise CredencialInvalida(
+                    "COPEL: cadastro não ativado na agência virtual (tela 'Ativar cadastro') "
+                    "— ative o cadastro manualmente antes de rodar esta UC.")
             if self._erro_transitorio():
                 # erro de SERVIDOR (rate-limit/instabilidade) -> falha rápido; o retry do main
                 # reabre o navegador e tenta de novo (com backoff), sem esperar o timeout todo.
