@@ -20,6 +20,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
 import re
+import unicodedata
 
 import _caminhos  # noqa: E402,F401  (permite rodar este arquivo direto)
 
@@ -27,7 +28,7 @@ import config
 import email_graph
 import memoria_email
 from api_faturas import (buscar_faturas, montar_item_email, enviar_leituras_email,
-                         consultar_titular)
+                         consultar_titular, consultar_ucs)
 from fatura_pdf import extrair_dados, ler_uc, ler_uc_antiga
 from planilha import normalizar_mes
 
@@ -51,6 +52,40 @@ def _nome_do_corpo(corpo: str) -> str:
     """Nome do cliente no corpo: 'Caro(a) MARIA ANDREIA ..., sua fatura ...'."""
     m = re.search(r"Caro\(a\)\s+(.+?),", _strip_html(corpo), re.I)
     return m.group(1).strip() if m else ""
+
+
+def _norm_txt(s) -> str:
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"[^A-Z0-9 ]", " ", s.upper())
+
+
+def _endereco_do_corpo(corpo: str) -> str:
+    """Endereço no corpo da COPEL: 'Endereço: LIN PEROBA, - 658 ... - CASCAVEL'."""
+    txt = _strip_html(corpo)
+    m = re.search(r"Endere[çc]o:?\s*(.+?)(?:Voc[êe]|Confira|Para abrir|Para facilitar|$)",
+                  txt, re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _escolher_uc(ucs: list, end_email: str, alias: str = "") -> dict | None:
+    """Escolhe, na lista de UCs do cliente, a que casa com o endereço do e-mail
+    (logradouro+cidade). Se só tem uma, usa ela."""
+    cand = [u for u in (ucs or [])
+            if not alias or str(u.get("concessionaria_alias") or "").upper() == alias.upper()]
+    cand = cand or (ucs or [])
+    if not cand:
+        return None
+    if len(cand) == 1:
+        return cand[0]
+    alvo = set(_norm_txt(end_email).split())
+    best, score = None, 0
+    for u in cand:
+        e = u.get("endereco") or {}
+        toks = set(_norm_txt(f"{e.get('logradouro','')} {e.get('cidade','')}").split())
+        sc = len(alvo & toks)
+        if sc > score:
+            best, score = u, sc
+    return best
 
 
 _RX_NOME = re.compile(r"Matricula-0*(\d+)-(\d{2})-(\d{4})", re.I)
@@ -157,25 +192,37 @@ def _dados_para_crm(pdf: dict, uc_aneel: str, mes_ref: str) -> dict:
 
 
 def _preparar_pdf(e: dict, pasta):
-    """Baixa o PDF da fatura, remove a senha se precisar (via /ucs/titular) e salva.
-    Devolve (caminho, uc_aneel). uc_aneel vem do corpo (Energisa) ou do titular (COPEL)."""
+    """Baixa o PDF, remove a senha se precisar (via /ucs/titular) e salva.
+    Devolve (caminho, uc_aneel, match_key). COPEL: acha a UC pela lista do cliente (por
+    endereço) -> documento (senha) + match_key (uc que o CRM reconhece); uc_aneel = UC
+    nova de dentro do PDF (pro backfill)."""
     pdfs = email_graph.baixar_pdfs(e["caixa"], e["msg_id"])
     alvo = next((p for p in pdfs if p[0] == e["nome"]), pdfs[0] if pdfs else None)
     if not alvo:
-        return None, ""
+        return None, "", ""
     conteudo = alvo[1]
-    uc_aneel = _uc_aneel_do_corpo(e["corpo"])
+    uc_aneel, match_key = _uc_aneel_do_corpo(e["corpo"]), ""
     tipo = e.get("senha")
-    if tipo in ("titular", "titular_nome"):
-        if tipo == "titular_nome":      # COPEL: o e-mail só tem o nome
-            tit = consultar_titular(nome=e.get("nome", ""), alias=e.get("alias", ""))
-        else:                           # outros: por matrícula/UC
-            tit = consultar_titular(matricula=e.get("matricula", ""), alias=e.get("alias", ""))
-        digitos = int(e.get("senha_digitos", 4))        # COPEL=4, Elektro=5
-        senha = re.sub(r"\D", "", str(tit.get("documento", "")))[:digitos]
-        conteudo = email_graph.pdf_sem_senha(conteudo, senha)   # abre e remove a senha
+    digitos = int(e.get("senha_digitos", 4))            # COPEL=4, Elektro=5
+    if tipo == "titular_nome":          # COPEL: e-mail só tem nome -> UCs do cliente
+        ucs = consultar_ucs(nome=e.get("nome", ""), alias=e.get("alias", ""))
+        uc_sel = _escolher_uc(ucs, _endereco_do_corpo(e["corpo"]), e.get("alias", ""))
+        doc = re.sub(r"\D", "", str((uc_sel or {}).get("documento", "")))
+        if not doc:                     # cai no titular principal (mesmo CNPJ p/ cliente único)
+            doc = re.sub(r"\D", "", str(
+                consultar_titular(nome=e.get("nome", ""), alias=e.get("alias", "")).get("documento", "")))
+        conteudo = email_graph.pdf_sem_senha(conteudo, doc[:digitos])
+        if uc_sel:
+            match_key = str(uc_sel.get("uc") or "")     # UC que o CRM reconhece
+    elif tipo == "titular":
+        tit = consultar_titular(matricula=e.get("matricula", ""), alias=e.get("alias", ""))
+        conteudo = email_graph.pdf_sem_senha(
+            conteudo, re.sub(r"\D", "", str(tit.get("documento", "")))[:digitos])
         uc_aneel = uc_aneel or re.sub(r"\D", "", str(tit.get("uc_aneel", "")))
-    return email_graph.salvar(conteudo, pasta, alvo[0]), uc_aneel
+    caminho = email_graph.salvar(conteudo, pasta, alvo[0])
+    if tipo == "titular_nome":          # UC nova (ANEEL) vem de dentro do PDF -> backfill
+        uc_aneel = ler_uc(caminho) or uc_aneel
+    return caminho, uc_aneel, match_key
 
 
 def _enviar_lote(envios, enviar) -> tuple[int, dict]:
@@ -275,7 +322,7 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
         rotulo = f"id={f['id_fatura']} UC={f['uc']} {f['mes_referencia']} ({e['alias']})"
         mes_ref = f.get("mes_referencia", "")
         try:
-            caminho, uc_aneel = _preparar_pdf(e, pasta)
+            caminho, uc_aneel, _mk = _preparar_pdf(e, pasta)
             if not caminho:
                 print(f"  [sem anexo] {rotulo}")
                 continue
@@ -357,14 +404,14 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
     for e, mes_ref, ch in jobs:
         rotulo = f"{e['alias']} matr={e['matricula']} {mes_ref}"
         try:
-            caminho, uc_aneel = _preparar_pdf(e, pasta)
+            caminho, uc_aneel, mk = _preparar_pdf(e, pasta)
             if not caminho:
                 print(f"  [sem anexo] {rotulo}")
                 continue
             pdf = extrair_dados(caminho)
-            # chave de casamento: UC antiga (se migrou ANEEL) -> matrícula do e-mail (Energisa/
-            # CELESC) -> UC de dentro do PDF (COPEL, que não traz a UC no e-mail).
-            match_key = ler_uc_antiga(caminho) or e.get("matricula") or ler_uc(caminho)
+            # chave de casamento: COPEL (UC do CRM pela lista/endereço) -> UC antiga (migração
+            # ANEEL) -> matrícula do e-mail (Energisa/CELESC) -> UC de dentro do PDF.
+            match_key = mk or ler_uc_antiga(caminho) or e.get("matricula") or ler_uc(caminho)
             print(f"  [lido] {rotulo}  venc={pdf['data_vencimento']} valor={pdf['valor_total']} "
                   f"consumo={pdf['kwh_total_consumo']} inj={pdf['kwh_injetado'] or '-'}")
             registros.append({

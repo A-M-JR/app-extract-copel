@@ -313,6 +313,25 @@ def consultar_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
         return {}
 
 
+def consultar_ucs(matricula: str = "", uc_aneel: str = "", alias: str = "",
+                  nome: str = "", timeout: int | None = None) -> list[dict]:
+    """GET /ucs/titular -> a lista `ucs` do cliente, cada uma com id, uc (antiga),
+    uc_aneel (nova), nome, documento (POR UC) e endereco{}. Usado p/ casar a COPEL por
+    endereço e pegar o documento específico da UC. [] se não achar."""
+    timeout = getattr(config, "API_TIMEOUT_S", 30) if timeout is None else timeout
+    url = _base_url() + getattr(config, "API_ROTA_TITULAR", "/api/v1/ucs/titular")
+    headers = {"Authorization": f"Bearer {_token()}", "Accept": "application/json"}
+    params = {k: v for k, v in (("matricula", matricula), ("uc_aneel", uc_aneel),
+                                ("nome", nome), ("concessionaria_alias", alias)) if v}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=timeout)
+        if not r.ok:
+            return []
+        return ((r.json() or {}).get("data") or {}).get("ucs") or []
+    except Exception:
+        return []
+
+
 def senha_pdf_por_titular(matricula: str = "", uc_aneel: str = "", alias: str = "",
                           nome: str = "") -> str:
     """Os 4 primeiros dígitos do documento (CPF/CNPJ) do titular — senha do PDF."""
