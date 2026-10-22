@@ -259,18 +259,24 @@ class Painel(tk.Tk):
                    command=self._abrir_planilha).pack(side="left")
         ttk.Label(self._plan_box, text="   edite os dados e salve", style="Muted.TLabel").pack(side="left")
 
-        # botões Rodar / Parar — CENTRALIZADOS
+        # botões Rodar / E-mail / Parar — CENTRALIZADOS
         acoes = ttk.Frame(f, style="Card.TFrame")
-        acoes.grid(row=7, column=0, pady=(18, 4))
+        acoes.grid(row=7, column=0, pady=(18, 2))
         self.btn_rodar = ttk.Button(acoes, text="▶   Rodar", style="Accent.TButton", command=self._rodar)
         self.btn_rodar.pack(side="left", padx=(0, 10))
+        self.btn_email = ttk.Button(acoes, text="📧  Rodar e-mail", command=self._rodar_email)
+        self.btn_email.pack(side="left", padx=(0, 10))
         self.btn_parar = ttk.Button(acoes, text="■  Parar", style="Stop.TButton", command=self._parar)
         self.btn_parar.pack(side="left")
         self.btn_parar.config(state="disabled")
+        ttk.Label(f, text="“Rodar” usa o portal da concessionária escolhida acima. "
+                          "“Rodar e-mail” lê as faturas que chegam por e-mail (Energisa, CELESC, COPEL).",
+                  style="Muted.TLabel", wraplength=560, justify="center").grid(
+            row=8, column=0, pady=(0, 6))
 
         # progresso
         prog = ttk.Frame(f, style="Card.TFrame")
-        prog.grid(row=8, column=0, sticky="ew", pady=(14, 0))
+        prog.grid(row=9, column=0, sticky="ew", pady=(14, 0))
         prog.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Pronto.")
         ttk.Label(prog, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
@@ -280,11 +286,11 @@ class Painel(tk.Tk):
                                      mode="determinate", maximum=100)
         self.barra.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
-        ttk.Separator(f).grid(row=9, column=0, sticky="ew", pady=(18, 14))
+        ttk.Separator(f).grid(row=10, column=0, sticky="ew", pady=(18, 14))
 
         # resultados — CENTRALIZADOS
         res = ttk.Frame(f, style="Card.TFrame")
-        res.grid(row=10, column=0)
+        res.grid(row=11, column=0)
         self.resumo_var = tk.StringVar(value="")
         ttk.Label(res, textvariable=self.resumo_var, style="Muted.TLabel").pack(pady=(0, 10))
         bf = ttk.Frame(res, style="Card.TFrame")
@@ -418,6 +424,10 @@ class Painel(tk.Tk):
             var = tk.BooleanVar(value=nome in ativas)
             ttk.Checkbutton(cf, text=nome, variable=var).pack(side="left", padx=(0, 22))
             self.conc_24h_vars[nome] = var
+        self.email_24h_var = tk.BooleanVar(value=bool(getattr(config, "CONTINUO_EMAIL", True)))
+        ttk.Checkbutton(
+            f, text="✉  Também ler as faturas que chegam por E-MAIL (Energisa, CELESC, COPEL)",
+            variable=self.email_24h_var).grid(row=17, column=0, columnspan=3, sticky="w", pady=(2, 14))
 
         bs = ttk.Frame(f, style="Card.TFrame")
         bs.grid(row=20, column=0, columnspan=3, pady=(10, 0))
@@ -594,8 +604,9 @@ class Painel(tk.Tk):
             return
         cfg["CONTINUO_INTERVALO_MIN"] = max(1, cfg["CONTINUO_INTERVALO_MIN"])
         cfg["CONTINUO_CONCESSIONARIAS"] = [n for n, v in self.conc_24h_vars.items() if v.get()]
-        if not cfg["CONTINUO_CONCESSIONARIAS"]:
-            messagebox.showerror("24/7", "Marque pelo menos uma concessionária pro modo 24/7.")
+        cfg["CONTINUO_EMAIL"] = bool(self.email_24h_var.get())
+        if not cfg["CONTINUO_CONCESSIONARIAS"] and not cfg["CONTINUO_EMAIL"]:
+            messagebox.showerror("24/7", "Marque pelo menos uma concessionária ou o e-mail pro modo 24/7.")
             return
         self.local["config"] = cfg
         salvar_local(self.local)
@@ -722,6 +733,36 @@ class Painel(tk.Tk):
         threading.Thread(target=self._ler_saida, args=(self._proc,), daemon=True).start()
         self.after(150, self._poll_fila)
 
+    def _rodar_email(self):
+        """Lê as faturas que chegam por e-mail (Energisa/CELESC/COPEL) e manda pro CRM.
+        Não usa portal/captcha. Respeita o 'Ensaio' (não envia)."""
+        if self._proc and self._proc.poll() is None:
+            messagebox.showinfo("Aguarde", "Já tem uma execução rodando.")
+            return
+        cmd = [sys.executable, "-u", str(ROBO / "main.py"), "email", "--tudo"]
+        if not self.sem_enviar.get():
+            cmd.append("--enviar")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            self._proc = subprocess.Popen(
+                cmd, cwd=str(RAIZ), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=flags)
+        except Exception as e:
+            messagebox.showerror("Erro", str(e))
+            return
+        self.fila = queue.Queue()
+        self._total = 0
+        self._parado = False
+        self.resumo_var.set("")
+        self._abrir_log("E-mail", "email", "0")
+        self._set_rodando(True)
+        self.status_var.set("Lendo os e-mails…")
+        self.cont_var.set("")
+        self.barra.config(mode="indeterminate")
+        self.barra.start(12)
+        threading.Thread(target=self._ler_saida, args=(self._proc,), daemon=True).start()
+        self.after(150, self._poll_fila)
+
     def _ler_saida(self, proc):
         try:
             for linha in proc.stdout:
@@ -825,7 +866,14 @@ class Painel(tk.Tk):
 
     def _set_rodando(self, rodando: bool):
         self.btn_rodar.config(state="disabled" if rodando else "normal")
+        self.btn_email.config(state="disabled" if rodando else "normal")
         self.btn_parar.config(state="normal" if rodando else "disabled")
+        if not rodando:                     # para a barra indeterminada (modo e-mail)
+            try:
+                self.barra.stop()
+                self.barra.config(mode="determinate")
+            except Exception:
+                pass
 
     def _parar(self):
         """Aborta a execução: mata o processo e TODA a árvore de filhos (navegador, etc.)."""
