@@ -72,6 +72,15 @@ def _identificar(de: str, assunto: str, corpo: str, nome: str) -> dict | None:
             return None
         return {"alias": m.group(1).upper(), "matricula": mm.group(1),
                 "mes_num": int(mm.group(2)), "mes_ano": int(mm.group(3)), "senha": None}
+    # --- CELESC: tudo no corpo, PDF SEM senha. UC do corpo = UC ANEEL (uc_secondary) ---
+    if "@celesc.com.br" in de:
+        txt = _strip_html(corpo)
+        uc = re.search(r"Unidade Consumidora:?\s*([\d][\d.\-/ ]{6,})", txt, re.I)
+        ref = re.search(r"[Mm][êe]s de refer[êe]ncia:?\s*(\d{1,2})/(\d{4})", txt, re.I)
+        if not (uc and ref):
+            return None
+        return {"alias": "CLC", "matricula": re.sub(r"\D", "", uc.group(1)),
+                "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)), "senha": None}
     # --- COPEL: PDF com senha = 4 díg do CPF/CNPJ (via /ucs/titular).
     # LIMITAÇÃO: a maioria dos e-mails COPEL NÃO traz a UC no corpo (só nome+mês+valor);
     # a UC só está DENTRO do PDF, que precisa da senha pra abrir. Então por enquanto só
