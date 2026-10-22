@@ -116,6 +116,20 @@ def _identificar(de: str, assunto: str, corpo: str, nome: str) -> dict | None:
             return None
         return {"alias": "CLC", "matricula": re.sub(r"\D", "", uc.group(1)),
                 "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)), "senha": None}
+    # --- NEOENERGIA ELEKTRO (USINA): corpo tem "Seu código"/"Código do Cliente" (=uc da
+    # usina) + "Olá <nome>" + "Mês de referência". PDF com senha = 5 díg do CPF/CNPJ.
+    # alias real da usina (CKT/CDI) vem da consulta (resolvido no _preparar_pdf).
+    if "servicosneoenergia.com" in de:
+        txt = _strip_html(corpo)
+        cod = re.search(r"(?:C[óo]digo do Cliente|Seu c[óo]digo):?\s*(\d{4,})", txt, re.I)
+        ref = re.search(r"[Mm][êe]s de refer[êe]ncia:?\s*(\d{1,2})/(\d{4})", txt, re.I)
+        if not (cod and ref):
+            return None
+        nome = re.search(r"Ol[áa]\s+(.+?)\s+Sua conta", txt, re.I)
+        return {"alias": "CKT", "matricula": cod.group(1), "tipo_uc": "USINA",
+                "nome": (nome.group(1).strip() if nome else ""),
+                "mes_num": int(ref.group(1)), "mes_ano": int(ref.group(2)),
+                "senha": "titular_usina", "senha_digitos": 5}
     # --- COPEL: o e-mail só traz o NOME do cliente ("Prezado X") + mês. PDF com senha =
     # 4 díg do CPF/CNPJ. Fluxo: nome -> /ucs/titular -> documento (senha) -> abre o PDF ->
     # a UC vem de DENTRO do PDF (ler_uc). matricula vazia aqui (resolvida após abrir).
@@ -204,7 +218,16 @@ def _preparar_pdf(e: dict, pasta):
     uc_aneel, match_key = _uc_aneel_do_corpo(e["corpo"]), ""
     tipo = e.get("senha")
     digitos = int(e.get("senha_digitos", 4))            # COPEL=4, Elektro=5
-    if tipo == "titular_nome":          # COPEL: e-mail só tem nome -> UCs do cliente
+    if tipo == "titular_usina":         # ELEKTRO (usina): acha por código (uc), alias varia
+        ucs = consultar_ucs(matricula=e.get("matricula", ""))   # sem alias (CKT ou CDI)
+        u = next((x for x in ucs if str(x.get("tipo_uc", "")).upper() == "USINA"),
+                 ucs[0] if ucs else {})
+        if u.get("concessionaria_alias"):
+            e["alias"] = u["concessionaria_alias"]              # alias real da usina
+        doc = re.sub(r"\D", "", str(u.get("documento", "")))
+        conteudo = email_graph.pdf_sem_senha(conteudo, doc[:digitos])
+        match_key = str(u.get("uc") or e.get("matricula") or "")
+    elif tipo == "titular_nome":        # COPEL: e-mail só tem nome -> UCs do cliente
         ucs = consultar_ucs(nome=e.get("nome", ""), alias=e.get("alias", ""))
         uc_sel = _escolher_uc(ucs, _endereco_do_corpo(e["corpo"]), e.get("alias", ""))
         doc = re.sub(r"\D", "", str((uc_sel or {}).get("documento", "")))
@@ -339,6 +362,8 @@ def executar(enviar=False, limite=0, caixas=None, dias=None):
                 "uc_aneel": uc_aneel,
                 "ano_mes_referencia": mes_ref,
             }
+            if e.get("tipo_uc"):
+                chaves["tipo_uc"] = e["tipo_uc"]
             registros.append({
                 "alias": e["alias"], "matricula": e["matricula"],
                 "matricula_envio": chaves["matricula"], "mes": mes_ref,
@@ -427,6 +452,8 @@ def executar_tudo(enviar=False, limite=0, caixas=None, dias=None):
                     "uc_aneel": uc_aneel,             # UC nova (ANEEL)
                     "ano_mes_referencia": mes_ref,
                 }
+                if e.get("tipo_uc"):                  # USINA -> rota de farms no CRM
+                    chaves["tipo_uc"] = e["tipo_uc"]
                 dados = _dados_para_crm(pdf, uc_aneel, mes_ref)
                 envios.append((ch, match_key, mes_ref, rotulo,
                                montar_item_email(chaves, dados, pdf_path=caminho)))
