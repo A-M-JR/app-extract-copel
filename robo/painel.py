@@ -1,15 +1,19 @@
 """
-Painel do robô de faturas (janela Windows, Tkinter — sem dependências extras).
+Painel do robô de faturas — GUI moderna em CustomTkinter.
 
 - Aba "Executar": concessionária, modo (API/planilha), limite -> Rodar.
-    * modo API      -> "Ensaio" (não envia pro CRM)
+    * modo API      -> "Ensaio" (não envia pro CRM) + "Incluir usinas"
     * modo Planilha -> "Abrir planilha" (edita o contas.xlsx)
-- Aba "Configuração API": URL + token (salvos em config_local.json).
-- Aba "Configurações": captcha (Buster / solver próprio / manual), pausas e tentativas
-  (salvos em config_local.json, chave "config" — valem na próxima execução).
+    * "Rodar e-mail" -> lê as faturas que chegam por e-mail (Energisa/CELESC/COPEL)
+- Aba "Conexão CRM": URL + token da API + login do modo planilha (config_local.json).
+- Aba "Configurações": captcha, pausas/tentativas (avançado) e modo 24/7.
+- Aba "E-mail": SMTP de notificação (quem recebe / quando / servidor).
+- Aba "Faturas (e-mail)": credenciais do Microsoft Graph (app-only, Mail.Read).
 - Roda SILENCIOSO (sem CMD) e mostra o progresso (X/Y + barra) + resultados aqui.
 
-Rode pelo  painel.bat  (ou: python robo/painel.py)
+Janela redimensionável e responsiva (abas roláveis). Segredos criptografados (DPAPI).
+
+Rode pelo  painel.bat  (ou: pythonw robo/painel.py)
 """
 import json
 import os
@@ -21,7 +25,9 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import messagebox
+
+import customtkinter as ctk
 
 ROBO = Path(__file__).resolve().parent          # extract_copel/robo
 RAIZ = ROBO.parent                              # extract_copel/
@@ -31,22 +37,24 @@ import _caminhos  # noqa: E402,F401  (subpastas de robo/)
 import config
 from concessionarias import CONCESSIONARIAS
 
-# paleta
-BG      = "#F1F4F7"
-CARD    = "#FFFFFF"
-TXT     = "#1F2937"
-MUTED   = "#6B7280"
-FIELDLB = "#7C8794"
-LINHA   = "#E3E8EE"
-ACCENT  = "#2E7D32"
-ACCENT2 = "#256628"
-HEAD    = "#1E6A2B"     # faixa do topo
-HEAD2   = "#C8E6C9"     # subtítulo na faixa
-BTN     = "#F1F4F7"
-BTN2    = "#E3E8EE"
-TAB_OFF = "#E4E9EE"
-TROUGH  = "#E6EAEE"
-ASSETS  = RAIZ / "assets"
+# ---- identidade visual Ilumisol (cores que funcionam no claro e no escuro) ----
+# cores como tupla (claro, escuro); cor única = igual nos dois temas.
+GREEN    = "#2E7D32"                 # verde Ilumisol (ação principal)
+GREEN_D  = "#256628"                 # hover do verde
+HEAD     = "#1E6A2B"                 # faixa verde do topo
+HEAD_SUB = "#C8E6C9"                 # subtítulo na faixa
+RED      = "#C0392B"                 # parar
+RED_D    = "#A5342A"
+MUTED    = ("#6B7280", "#9AA4B2")    # texto secundário
+SEC_FG   = ("#FFFFFF", "#2B2F36")    # fundo dos cartões de seção
+BTN_SEC  = ("#E8ECF1", "#343A42")    # botão secundário
+BTN_SECD = ("#D7DEE6", "#3E444D")    # hover do secundário
+BTN_SECT = ("#1F2937", "#E5E7EB")    # texto do botão secundário
+ENTRY_FG = ("#FFFFFF", "#23272E")
+ASSETS   = RAIZ / "assets"
+
+ctk.set_appearance_mode("light")
+ctk.set_widget_scaling(1.0)
 
 
 def carregar_local() -> dict:
@@ -62,13 +70,38 @@ def salvar_local(d: dict):
     LOCAL_JSON.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-class Painel(tk.Tk):
+class _Tip:
+    """Tooltip simples (balão escuro ao passar o mouse) — ajuda pros campos técnicos."""
+    def __init__(self, widget, texto: str):
+        self.widget = widget
+        self.texto = texto
+        self.tip = None
+        widget.bind("<Enter>", self._mostrar)
+        widget.bind("<Leave>", self._esconder)
+
+    def _mostrar(self, _=None):
+        if self.tip or not self.texto:
+            return
+        x = self.widget.winfo_rootx() + 18
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.texto, bg="#111827", fg="white",
+                 font=("Segoe UI", 9), justify="left", padx=10, pady=6,
+                 wraplength=340, bd=0).pack()
+
+    def _esconder(self, _=None):
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
+class Painel(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Robô de Faturas")
-        self.configure(bg=BG)
         self._icones()
-        self.resizable(False, False)
         self.local = carregar_local()
         self._proc = None
         self._parado = False
@@ -76,36 +109,44 @@ class Painel(tk.Tk):
         self._ultimo_relatorio = None
         self._log_fh = None
         self._log_path = Path(config.PASTA_EXTRACAO) / "ultimo_log.txt"
-        self._estilos()
 
-        # faixa verde do topo: ícone + título + selo do 24/7
-        head = tk.Frame(self, bg=HEAD)
-        head.pack(fill="x")
-        dentro = tk.Frame(head, bg=HEAD)
-        dentro.pack(fill="x", padx=26, pady=16)
-        if self._logo:
-            tk.Label(dentro, image=self._logo, bg=HEAD).pack(side="left", padx=(0, 14))
-        txt = tk.Frame(dentro, bg=HEAD)
-        txt.pack(side="left")
-        tk.Label(txt, text="Robô de Faturas", bg=HEAD, fg="white",
-                 font=("Segoe UI Semibold", 18)).pack(anchor="w")
-        tk.Label(txt, text="Baixa as faturas das concessionárias e devolve pro CRM",
-                 bg=HEAD, fg=HEAD2, font=("Segoe UI", 9)).pack(anchor="w")
-        self.st24_var = tk.StringVar(value="")
-        self.st24 = tk.Label(dentro, textvariable=self.st24_var, bg=ACCENT, fg="white",
-                             font=("Segoe UI Semibold", 8), padx=10, pady=3)
-        self.st24.pack(side="right")
+        # fontes
+        self.f_titulo = ctk.CTkFont(size=19, weight="bold")
+        self.f_sub    = ctk.CTkFont(size=12)
+        self.f_sec    = ctk.CTkFont(size=15, weight="bold")
+        self.f_field  = ctk.CTkFont(size=11, weight="bold")
+        self.f_small  = ctk.CTkFont(size=12)
+        self.f_big    = ctk.CTkFont(size=16, weight="bold")
+
+        self._cabecalho()
+
+        # abas (CTkTabview) — mesmas abas de sempre
+        self.A_EXEC = "▶  Executar"
+        self.A_CRM  = "🔑  Conexão CRM"
+        self.A_CFG  = "⚙  Configurações"
+        self.A_MAIL = "✉  E-mail"
+        self.A_FAT  = "📥  Faturas (e-mail)"
+        self.tabs = ctk.CTkTabview(self, corner_radius=12, fg_color=SEC_FG,
+                                   segmented_button_selected_color=GREEN,
+                                   segmented_button_selected_hover_color=GREEN_D)
+        self.tabs.pack(fill="both", expand=True, padx=16, pady=(6, 16))
+        for nome in (self.A_EXEC, self.A_CRM, self.A_CFG, self.A_MAIL, self.A_FAT):
+            self.tabs.add(nome)
+        try:
+            self.tabs._segmented_button.configure(font=ctk.CTkFont(size=13, weight="bold"))
+        except Exception:
+            pass
+
+        self._aba_executar()
+        self._aba_config()
+        self._aba_ajustes()
+        self._aba_email()
+        self._aba_faturas_email()
+
+        self._ajustar_tamanho()
         self._atualizar_status_24h()
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=22, pady=(16, 22))
-        nb.add(self._aba_executar(nb), text="▶  Executar")
-        nb.add(self._aba_config(nb), text="🔑  Conexão CRM")
-        nb.add(self._aba_ajustes(nb), text="⚙  Configurações")
-        nb.add(self._aba_email(nb), text="✉  E-mail")
-        nb.add(self._aba_faturas_email(nb), text="📥  Faturas (e-mail)")
-        self._ajustar_tamanho()
-
+    # ---------- infra visual ----------
     def _icones(self):
         """Ícone da janela/barra de tarefas (assets/icone.ico) + logo do cabeçalho."""
         self._logo = None
@@ -123,6 +164,39 @@ class Painel(tk.Tk):
         except Exception:
             self._logo = None
 
+    def _cabecalho(self):
+        """Faixa verde do topo: logo + título + selo do 24/7 + alternar claro/escuro."""
+        head = ctk.CTkFrame(self, corner_radius=0, fg_color=HEAD)
+        head.pack(fill="x")
+        dentro = ctk.CTkFrame(head, fg_color="transparent")
+        dentro.pack(fill="x", padx=24, pady=14)
+        if self._logo:
+            tk.Label(dentro, image=self._logo, bg=HEAD, bd=0).pack(side="left", padx=(0, 14))
+        txt = ctk.CTkFrame(dentro, fg_color="transparent")
+        txt.pack(side="left")
+        ctk.CTkLabel(txt, text="Robô de Faturas", font=self.f_titulo,
+                     text_color="white").pack(anchor="w")
+        ctk.CTkLabel(txt, text="Baixa as faturas das concessionárias e devolve pro CRM",
+                     font=self.f_sub, text_color=HEAD_SUB).pack(anchor="w")
+
+        direita = ctk.CTkFrame(dentro, fg_color="transparent")
+        direita.pack(side="right")
+        self.st24_var = tk.StringVar(value="")
+        self.st24 = ctk.CTkLabel(direita, textvariable=self.st24_var, font=ctk.CTkFont(size=11, weight="bold"),
+                                 text_color="white", fg_color=GREEN, corner_radius=9,
+                                 width=190, height=26)
+        self.st24.pack(side="top")
+        self._modo_claro = True
+        self.btn_tema = ctk.CTkButton(direita, text="🌙  Escuro", width=110, height=26,
+                                      fg_color="#2A7D33", hover_color="#236329",
+                                      font=ctk.CTkFont(size=11), command=self._alternar_tema)
+        self.btn_tema.pack(side="top", pady=(8, 0))
+
+    def _alternar_tema(self):
+        self._modo_claro = not self._modo_claro
+        ctk.set_appearance_mode("light" if self._modo_claro else "dark")
+        self.btn_tema.configure(text="🌙  Escuro" if self._modo_claro else "☀  Claro")
+
     def _atualizar_status_24h(self):
         """Selo no topo: 24/7 ligado (com o próximo ciclo) ou desligado. Atualiza a cada 30s."""
         st = Path(config.PASTA_EXTRACAO) / "status_24h.txt"
@@ -133,227 +207,253 @@ class Painel(tk.Tk):
                 if "desligado" not in linha:
                     m = re.search(r"pr[óo]ximo ciclo [àa]s (\d{2}:\d{2})", linha)
                     texto = ("● 24/7 ligado · próximo " + m.group(1)) if m else "● 24/7 rodando agora"
-                    cor = ACCENT
+                    cor = GREEN
         except Exception:
             pass
         self.st24_var.set(texto)
-        self.st24.config(bg=cor)
+        self.st24.configure(fg_color=cor)
         self.after(30_000, self._atualizar_status_24h)
 
     def _ajustar_tamanho(self):
-        """Dimensiona a janela pra caber TODO o conteúdo (sem cortar) e centraliza."""
+        """Tamanho inicial que cabe o conteúdo, centralizado; janela redimensionável."""
         self.update_idletasks()
-        w = max(580, self.winfo_reqwidth())
-        h = self.winfo_reqheight() + 6
+        w = 780
+        h = min(900, max(640, self.winfo_screenheight() - 140))
         x = (self.winfo_screenwidth() - w) // 2
         y = max(0, (self.winfo_screenheight() - h) // 2 - 20)
         self.geometry(f"{w}x{h}+{x}+{y}")
-        self.minsize(w, h)
+        self.minsize(560, 520)
 
-    def _estilos(self):
-        st = ttk.Style(self)
-        try:
-            st.theme_use("clam")
-        except Exception:
-            pass
-        # notebook — abas planas
-        st.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0),
-                     bordercolor=LINHA, lightcolor=CARD, darkcolor=CARD)
-        st.configure("TNotebook.Tab", background=TAB_OFF, foreground=MUTED,
-                     font=("Segoe UI", 10), padding=(22, 9), borderwidth=0,
-                     lightcolor=TAB_OFF, bordercolor=BG)
-        st.map("TNotebook.Tab", background=[("selected", CARD), ("active", "#EDF1F4")],
-               foreground=[("selected", ACCENT)], font=[("selected", ("Segoe UI Semibold", 10))],
-               lightcolor=[("selected", CARD)], expand=[("selected", (0, 0, 0, 0))])
-        st.layout("TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
-            ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
-                ("Notebook.label", {"side": "top", "sticky": ""})]})]})])   # sem retângulo de foco
-        # frames / labels
-        st.configure("Card.TFrame", background=CARD)
-        st.configure("TLabel", background=CARD, foreground=TXT, font=("Segoe UI", 10))
-        st.configure("Field.TLabel", background=CARD, foreground=FIELDLB,
-                     font=("Segoe UI Semibold", 8))
-        st.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 9))
-        st.configure("Secao.TLabel", background=CARD, foreground=TXT, font=("Segoe UI Semibold", 11))
-        st.configure("Save.TButton", font=("Segoe UI Semibold", 10), padding=(20, 9),
-                     foreground="white", background=ACCENT, borderwidth=0,
-                     lightcolor=ACCENT, darkcolor=ACCENT, focuscolor=ACCENT)
-        st.map("Save.TButton", background=[("active", ACCENT2)])
-        st.configure("Cont.TLabel", background=CARD, foreground=ACCENT, font=("Segoe UI Semibold", 15))
-        st.configure("TRadiobutton", background=CARD, foreground=TXT, font=("Segoe UI", 10))
-        st.configure("TCheckbutton", background=CARD, foreground=TXT, font=("Segoe UI", 10))
-        # campos brancos
-        st.configure("TCombobox", fieldbackground="white", foreground=TXT, padding=6, arrowsize=15)
-        st.map("TCombobox", fieldbackground=[("readonly", "white")],
-               foreground=[("readonly", TXT)],
-               selectbackground=[("readonly", "white")], selectforeground=[("readonly", TXT)])
-        for w in ("TSpinbox", "TEntry", "TCombobox"):
-            st.configure(w, bordercolor=LINHA, lightcolor="white", darkcolor="white")
-            st.map(w, bordercolor=[("focus", ACCENT)], lightcolor=[("focus", "white")])
-        st.configure("TSpinbox", fieldbackground="white", padding=6, arrowsize=13,
-                     background="white", arrowcolor=MUTED)
-        st.configure("TEntry", fieldbackground="white", padding=7)
-        st.configure("TCombobox", background=BTN, arrowcolor=MUTED)
-        st.configure("TSeparator", background=LINHA)
-        st.map("TRadiobutton", indicatorcolor=[("selected", ACCENT), ("!selected", "white")],
-               background=[("active", CARD)])
-        st.map("TCheckbutton", indicatorcolor=[("selected", ACCENT), ("!selected", "white")],
-               background=[("active", CARD)])
-        # botões
-        st.configure("TButton", font=("Segoe UI", 10), padding=(16, 9),
-                     background=BTN, foreground=TXT, borderwidth=1, bordercolor=LINHA,
-                     lightcolor=BTN, darkcolor=BTN, focuscolor=BTN)
-        st.map("TButton", background=[("active", BTN2)], bordercolor=[("active", "#CDD5DE")])
-        st.configure("Accent.TButton", font=("Segoe UI Semibold", 12), padding=(34, 13),
-                     foreground="white", background=ACCENT, borderwidth=0,
-                     lightcolor=ACCENT, darkcolor=ACCENT, focuscolor=ACCENT)
-        st.map("Accent.TButton", background=[("active", ACCENT2), ("disabled", "#AEBFAE")])
-        st.configure("Stop.TButton", font=("Segoe UI Semibold", 12), padding=(26, 13),
-                     foreground="white", background="#C0392B", borderwidth=0,
-                     lightcolor="#C0392B", darkcolor="#C0392B", focuscolor="#C0392B")
-        st.map("Stop.TButton", background=[("active", "#A5342A"), ("disabled", "#D9AAA4")])
-        st.configure("Barra.Horizontal.TProgressbar", background=ACCENT, lightcolor=ACCENT,
-                     darkcolor=ACCENT, bordercolor=TROUGH, troughcolor=TROUGH, borderwidth=0,
-                     thickness=10)
+    # --- helpers de layout ---
+    def _scroll(self, aba) -> ctk.CTkScrollableFrame:
+        s = ctk.CTkScrollableFrame(self.tabs.tab(aba), fg_color="transparent")
+        s.pack(fill="both", expand=True)
+        s.columnconfigure(0, weight=1)
+        return s
+
+    def _ajuda_aba(self, pai, texto):
+        ctk.CTkLabel(pai, text=texto, font=self.f_small, text_color=MUTED,
+                     anchor="w", justify="left", wraplength=680).pack(fill="x", padx=6, pady=(0, 10))
+
+    def _card(self, pai, titulo=None, desc=None, cols=1) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(pai, corner_radius=14, fg_color=SEC_FG)
+        card.pack(fill="x", padx=4, pady=(0, 14))
+        for c in range(cols):
+            card.columnconfigure(c, weight=1)
+        self._row = 0
+        if titulo:
+            ctk.CTkLabel(card, text=titulo, font=self.f_sec, anchor="w").grid(
+                row=0, column=0, columnspan=max(cols, 1), sticky="w", padx=18, pady=(16, 0))
+            self._row = 1
+        if desc:
+            ctk.CTkLabel(card, text=desc, font=self.f_small, text_color=MUTED,
+                         anchor="w", justify="left", wraplength=640).grid(
+                row=self._row, column=0, columnspan=max(cols, 1), sticky="w", padx=18, pady=(2, 2))
+            self._row += 1
+        return card
+
+    def _rotulo(self, card, texto, row, col=0, span=1, tip=None):
+        lb = ctk.CTkLabel(card, text=texto, font=self.f_field, text_color=MUTED, anchor="w")
+        lb.grid(row=row, column=col, columnspan=span, sticky="w",
+                padx=(18 if col == 0 else 8, 8), pady=(10, 3))
+        if tip:
+            _Tip(lb, tip)
+        return lb
+
+    def _entry(self, card, var, row, col=0, span=1, show=None):
+        e = ctk.CTkEntry(card, textvariable=var, font=self.f_small, height=34,
+                         fg_color=ENTRY_FG, **({"show": show} if show else {}))
+        e.grid(row=row, column=col, columnspan=span, sticky="ew",
+               padx=(18 if col == 0 else 8, 18 if col + span == card.grid_size()[0] or span > 1 else 8),
+               pady=(0, 6))
+        return e
+
+    def _spin(self, card, var, row, col=0, lo=0, hi=99999, width=120):
+        fr = ctk.CTkFrame(card, fg_color="transparent")
+        fr.grid(row=row, column=col, sticky="w", padx=(18 if col == 0 else 8, 8), pady=(0, 10))
+
+        def passo(d):
+            try:
+                v = int((var.get() or "0").strip())
+            except ValueError:
+                v = lo
+            var.set(str(max(lo, min(hi, v + d))))
+        ctk.CTkButton(fr, text="–", width=34, height=34, fg_color=BTN_SEC, hover_color=BTN_SECD,
+                      text_color=BTN_SECT, command=lambda: passo(-1)).pack(side="left")
+        ctk.CTkEntry(fr, textvariable=var, width=width - 68, height=34, justify="center",
+                     fg_color=ENTRY_FG).pack(side="left", padx=4)
+        ctk.CTkButton(fr, text="+", width=34, height=34, fg_color=BTN_SEC, hover_color=BTN_SECD,
+                      text_color=BTN_SECT, command=lambda: passo(1)).pack(side="left")
+        return fr
+
+    def _optionmenu(self, card, valores, row, col=0, span=1, command=None, width=200):
+        om = ctk.CTkOptionMenu(card, values=list(valores), command=command, height=34,
+                               fg_color=ENTRY_FG, text_color=BTN_SECT, button_color=GREEN,
+                               button_hover_color=GREEN_D, dropdown_hover_color=BTN_SECD)
+        om.grid(row=row, column=col, columnspan=span, sticky="ew",
+                padx=(18 if col == 0 else 8, 18), pady=(0, 6))
+        return om
+
+    def _btn_sec(self, pai, texto, cmd):
+        return ctk.CTkButton(pai, text=texto, command=cmd, height=36, font=self.f_small,
+                             fg_color=BTN_SEC, hover_color=BTN_SECD, text_color=BTN_SECT)
+
+    def _btn_salvar(self, pai, cmd):
+        return ctk.CTkButton(pai, text="✔  Salvar", command=cmd, height=38, font=self.f_big,
+                             fg_color=GREEN, hover_color=GREEN_D)
+
+    def _grade_botoes(self, pai, itens, cols=3):
+        """Dispõe botões (texto, cmd) numa grade de N colunas (reflui / responsivo)."""
+        gr = ctk.CTkFrame(pai, fg_color="transparent")
+        for c in range(cols):
+            gr.columnconfigure(c, weight=1)
+        for i, (txt, cmd) in enumerate(itens):
+            self._btn_sec(gr, txt, cmd).grid(row=i // cols, column=i % cols,
+                                             sticky="ew", padx=5, pady=5)
+        return gr
 
     # ---------- aba Executar ----------
-    def _aba_executar(self, parent):
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 24))
-        f.columnconfigure(0, weight=1)
+    def _aba_executar(self):
+        s = self._scroll(self.A_EXEC)
+        self._ajuda_aba(s, "Baixa as faturas e devolve pro CRM. Escolha a concessionária e "
+                           "clique em Rodar — ou leia as faturas que já chegaram por e-mail.")
 
-        ttk.Label(f, text="CONCESSIONÁRIA", style="Field.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 5))
+        c = self._card(s, "O que rodar")
+        c.columnconfigure(0, weight=1)
+        self._rotulo(c, "CONCESSIONÁRIA", 2)
         self._labels = {
             (CONCESSIONARIAS[n]["label"] + ("" if CONCESSIONARIAS[n]["pronta"] else "  (em breve)")): n
             for n in CONCESSIONARIAS
         }
-        self.conc_cb = ttk.Combobox(f, values=list(self._labels), state="readonly", font=("Segoe UI", 10))
-        self.conc_cb.grid(row=1, column=0, sticky="ew", ipady=3, pady=(0, 16))
-        self.conc_cb.current(0)
+        self.conc_cb = self._optionmenu(c, list(self._labels), 3)
+        self.conc_cb.set(list(self._labels)[0])
 
-        ttk.Label(f, text="MODO", style="Field.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 5))
+        self._rotulo(c, "MODO", 4, tip="API (CRM): pega as pendências direto do CRM e devolve. "
+                                       "Planilha (local): usa o contas.xlsx que você edita à mão.")
         self.modo_var = tk.StringVar(value="api")
-        mf = ttk.Frame(f, style="Card.TFrame")
-        mf.grid(row=3, column=0, sticky="w", pady=(0, 16))
-        ttk.Radiobutton(mf, text="API (CRM)", variable=self.modo_var, value="api",
-                        command=self._atualizar_modo).pack(side="left")
-        ttk.Radiobutton(mf, text="Planilha (local)", variable=self.modo_var, value="plan",
-                        command=self._atualizar_modo).pack(side="left", padx=(20, 0))
+        mf = ctk.CTkFrame(c, fg_color="transparent")
+        mf.grid(row=5, column=0, sticky="w", padx=14, pady=(0, 6))
+        ctk.CTkRadioButton(mf, text="API (CRM)", variable=self.modo_var, value="api",
+                           fg_color=GREEN, hover_color=GREEN_D,
+                           command=self._atualizar_modo).pack(side="left", padx=(4, 0))
+        ctk.CTkRadioButton(mf, text="Planilha (local)", variable=self.modo_var, value="plan",
+                           fg_color=GREEN, hover_color=GREEN_D,
+                           command=self._atualizar_modo).pack(side="left", padx=(22, 0))
 
-        ttk.Label(f, text="QUANTAS PROCESSAR   (0 = TODAS)", style="Field.TLabel").grid(
-            row=4, column=0, sticky="w", pady=(0, 5))
+        self._rotulo(c, "QUANTAS PROCESSAR   (0 = TODAS)", 6)
         self.limite_var = tk.StringVar(value="10")
-        ttk.Spinbox(f, from_=0, to=99999, textvariable=self.limite_var, width=10).grid(
-            row=5, column=0, sticky="w", pady=(0, 12))
+        self._spin(c, self.limite_var, 7, lo=0, hi=99999)
 
-        self.area = ttk.Frame(f, style="Card.TFrame")
-        self.area.grid(row=6, column=0, sticky="w", pady=(0, 4))
+        self.area = ctk.CTkFrame(c, fg_color="transparent")
+        self.area.grid(row=8, column=0, sticky="w", padx=14, pady=(0, 14))
         self.sem_enviar = tk.BooleanVar(value=False)
-        self._api_box = ttk.Checkbutton(
-            self.area, text="Ensaio — só teste, NÃO envia pro CRM", variable=self.sem_enviar)
+        self._api_box = ctk.CTkCheckBox(self.area, text="Ensaio — só teste, NÃO envia pro CRM",
+                                        variable=self.sem_enviar, onvalue=True, offvalue=False,
+                                        fg_color=GREEN, hover_color=GREEN_D)
         self.incluir_usinas = tk.BooleanVar(value=True)
-        self._api_usinas_box = ttk.Checkbutton(
-            self.area, text="Incluir faturas das usinas (fila farms/readings)",
-            variable=self.incluir_usinas)
-        self._plan_box = ttk.Frame(self.area, style="Card.TFrame")
-        ttk.Button(self._plan_box, text="📄  Abrir planilha (contas.xlsx)",
-                   command=self._abrir_planilha).pack(side="left")
-        ttk.Label(self._plan_box, text="   edite os dados e salve", style="Muted.TLabel").pack(side="left")
+        self._api_usinas_box = ctk.CTkCheckBox(self.area, text="Incluir faturas das usinas (fila farms/readings)",
+                                               variable=self.incluir_usinas, onvalue=True, offvalue=False,
+                                               fg_color=GREEN, hover_color=GREEN_D)
+        self._plan_box = ctk.CTkFrame(self.area, fg_color="transparent")
+        self._btn_sec(self._plan_box, "📄  Abrir planilha (contas.xlsx)",
+                      self._abrir_planilha).pack(side="left")
+        ctk.CTkLabel(self._plan_box, text="   edite os dados e salve",
+                     font=self.f_small, text_color=MUTED).pack(side="left")
 
-        # botões Rodar / E-mail / Parar — CENTRALIZADOS
-        acoes = ttk.Frame(f, style="Card.TFrame")
-        acoes.grid(row=7, column=0, pady=(18, 2))
-        self.btn_rodar = ttk.Button(acoes, text="▶   Rodar", style="Accent.TButton", command=self._rodar)
+        # ações principais — bem visíveis e centralizadas
+        acao = self._card(s, "Ação")
+        linha = ctk.CTkFrame(acao, fg_color="transparent")
+        linha.grid(row=1, column=0, pady=(6, 4))
+        self.btn_rodar = ctk.CTkButton(linha, text="▶   Rodar", font=self.f_big, height=48, width=170,
+                                       fg_color=GREEN, hover_color=GREEN_D, command=self._rodar)
         self.btn_rodar.pack(side="left", padx=(0, 10))
-        self.btn_email = ttk.Button(acoes, text="📧  Rodar e-mail", command=self._rodar_email)
+        self.btn_email = ctk.CTkButton(linha, text="📧  Rodar e-mail", font=self.f_small, height=48, width=150,
+                                       fg_color=BTN_SEC, hover_color=BTN_SECD, text_color=BTN_SECT,
+                                       command=self._rodar_email)
         self.btn_email.pack(side="left", padx=(0, 10))
-        self.btn_parar = ttk.Button(acoes, text="■  Parar", style="Stop.TButton", command=self._parar)
+        self.btn_parar = ctk.CTkButton(linha, text="■  Parar", font=self.f_big, height=48, width=130,
+                                       fg_color=RED, hover_color=RED_D, command=self._parar)
         self.btn_parar.pack(side="left")
-        self.btn_parar.config(state="disabled")
-        ttk.Label(f, text="“Rodar” usa o portal da concessionária escolhida acima. "
-                          "“Rodar e-mail” lê as faturas que chegam por e-mail (Energisa, CELESC, COPEL).",
-                  style="Muted.TLabel", wraplength=560, justify="center").grid(
-            row=8, column=0, pady=(0, 6))
+        self.btn_parar.configure(state="disabled")
+        ctk.CTkLabel(acao, text="“Rodar” usa o portal da concessionária escolhida acima.   "
+                                "“Rodar e-mail” lê as faturas que chegam por e-mail (Energisa, CELESC, COPEL).",
+                     font=self.f_small, text_color=MUTED, wraplength=640, justify="center").grid(
+            row=2, column=0, pady=(2, 8), padx=18)
 
         # progresso
-        prog = ttk.Frame(f, style="Card.TFrame")
-        prog.grid(row=9, column=0, sticky="ew", pady=(14, 0))
+        prog = ctk.CTkFrame(acao, fg_color="transparent")
+        prog.grid(row=3, column=0, sticky="ew", padx=18, pady=(6, 14))
         prog.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Pronto.")
-        ttk.Label(prog, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(prog, textvariable=self.status_var, font=self.f_small,
+                     text_color=MUTED, anchor="w").grid(row=0, column=0, sticky="w")
         self.cont_var = tk.StringVar(value="")
-        ttk.Label(prog, textvariable=self.cont_var, style="Cont.TLabel").grid(row=0, column=1, sticky="e")
-        self.barra = ttk.Progressbar(prog, style="Barra.Horizontal.TProgressbar",
-                                     mode="determinate", maximum=100)
-        self.barra.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        ctk.CTkLabel(prog, textvariable=self.cont_var, font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=GREEN).grid(row=0, column=1, sticky="e")
+        self.barra = ctk.CTkProgressBar(prog, height=12, corner_radius=6,
+                                        progress_color=GREEN, mode="determinate")
+        self.barra.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.barra.set(0)
 
-        ttk.Separator(f).grid(row=10, column=0, sticky="ew", pady=(18, 14))
-
-        # resultados — CENTRALIZADOS
-        res = ttk.Frame(f, style="Card.TFrame")
-        res.grid(row=11, column=0)
+        # resultados
+        res = self._card(s, "Resultados")
         self.resumo_var = tk.StringVar(value="")
-        ttk.Label(res, textvariable=self.resumo_var, style="Muted.TLabel").pack(pady=(0, 10))
-        bf = ttk.Frame(res, style="Card.TFrame")
-        bf.pack()
-        ttk.Button(bf, text="📊  Abrir relatório", command=self._abrir_relatorio).pack(side="left", padx=6)
-        ttk.Button(bf, text="📁  Abrir pasta", command=self._abrir_pasta).pack(side="left", padx=6)
-        ttk.Button(bf, text="🧾  Ver log", command=self._abrir_log_arquivo).pack(side="left", padx=6)
-        ttk.Button(bf, text="🔎  Consulta CRM", command=self._abrir_consulta_crm).pack(side="left", padx=6)
-        ttk.Button(bf, text="📈  Histórico", command=self._abrir_historico).pack(side="left", padx=6)
+        ctk.CTkLabel(res, textvariable=self.resumo_var, font=self.f_small,
+                     text_color=MUTED, wraplength=640, justify="left").grid(
+            row=1, column=0, sticky="w", padx=18, pady=(2, 8))
+        self._grade_botoes(res, [
+            ("📊  Abrir relatório", self._abrir_relatorio),
+            ("📁  Abrir pasta", self._abrir_pasta),
+            ("🧾  Ver log", self._abrir_log_arquivo),
+            ("🔎  Consulta CRM", self._abrir_consulta_crm),
+            ("📈  Histórico", self._abrir_historico),
+        ], cols=3).grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 14))
 
         self._atualizar_modo()
-        return f
 
     def _atualizar_modo(self):
         self._plan_box.pack_forget()
         self._api_box.pack_forget()
         self._api_usinas_box.pack_forget()
         if self.modo_var.get() == "api":
-            self._api_box.pack(anchor="w")
-            self._api_usinas_box.pack(anchor="w", pady=(4, 0))
+            self._api_box.pack(anchor="w", pady=(2, 0))
+            self._api_usinas_box.pack(anchor="w", pady=(8, 0))
         else:
-            self._plan_box.pack(anchor="w")
+            self._plan_box.pack(anchor="w", pady=(2, 0))
 
-    # ---------- aba Configuração ----------
-    def _aba_config(self, parent):
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 20))
-        f.columnconfigure(0, weight=1)
-        f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="CRM (modo API)", style="Secao.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Separator(f).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 12))
-        ttk.Label(f, text="URL DA API", style="Field.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 5))
+    # ---------- aba Conexão CRM ----------
+    def _aba_config(self):
+        s = self._scroll(self.A_CRM)
+        self._ajuda_aba(s, "Endereço e token do CRM (modo API) e o login da agência virtual "
+                           "(modo Planilha). Token e senhas ficam criptografados nesta máquina.")
+
+        c = self._card(s, "CRM (modo API)")
+        self._rotulo(c, "URL DA API", 1, tip="Endereço base da API do CRM, ex.: https://seu-crm/api")
         self.url_var = tk.StringVar(value=self.local.get("api_base_url", config.API_BASE_URL))
-        ttk.Entry(f, textvariable=self.url_var, font=("Segoe UI", 10)).grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-
-        ttk.Label(f, text="TOKEN", style="Field.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        self._entry(c, self.url_var, 2)
+        self._rotulo(c, "TOKEN", 3, tip="Chave de acesso da API. Fica criptografada (DPAPI) — só abre neste usuário/PC.")
         self.token_var = tk.StringVar(value=config.API_TOKEN)      # já descriptografado
-        self.token_entry = ttk.Entry(f, textvariable=self.token_var, show="•", font=("Segoe UI", 10))
-        self.token_entry.grid(row=5, column=0, columnspan=2, sticky="ew")
+        self.token_entry = self._entry(c, self.token_var, 4, show="•")
         self.mostrar = tk.BooleanVar(value=False)
-        ttk.Checkbutton(f, text="mostrar token", variable=self.mostrar,
-                        command=self._toggle_token).grid(row=6, column=0, sticky="w", pady=(6, 14))
+        ctk.CTkCheckBox(c, text="mostrar token", variable=self.mostrar, onvalue=True, offvalue=False,
+                        fg_color=GREEN, hover_color=GREEN_D, command=self._toggle_token).grid(
+            row=5, column=0, sticky="w", padx=18, pady=(2, 14))
 
-        ttk.Label(f, text="Login do modo planilha", style="Secao.TLabel").grid(
-            row=7, column=0, columnspan=2, sticky="w")
-        ttk.Separator(f).grid(row=8, column=0, columnspan=2, sticky="ew", pady=(2, 12))
-        ttk.Label(f, text="CPF / CNPJ DA AGÊNCIA VIRTUAL", style="Field.TLabel").grid(
-            row=9, column=0, sticky="w", pady=(0, 5))
-        ttk.Label(f, text="SENHA", style="Field.TLabel").grid(row=9, column=1, sticky="w", pady=(0, 5), padx=(16, 0))
+        c2 = self._card(s, "Login do modo planilha", cols=2)
+        self._rotulo(c2, "CPF / CNPJ DA AGÊNCIA VIRTUAL", 1, col=0)
+        self._rotulo(c2, "SENHA", 1, col=1)
         self.plan_login_var = tk.StringVar(value=config.PLAN_LOGIN)
         self.plan_senha_var = tk.StringVar(value=config.PLAN_SENHA)
-        ttk.Entry(f, textvariable=self.plan_login_var, font=("Segoe UI", 10)).grid(
-            row=10, column=0, sticky="ew", pady=(0, 6))
-        ttk.Entry(f, textvariable=self.plan_senha_var, show="•", font=("Segoe UI", 10)).grid(
-            row=10, column=1, sticky="ew", pady=(0, 6), padx=(16, 0))
-        ttk.Label(f, text="🔒 Token e senhas ficam criptografados (só abrem neste usuário/computador).",
-                  style="Muted.TLabel").grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 16))
+        self._entry(c2, self.plan_login_var, 2, col=0)
+        self._entry(c2, self.plan_senha_var, 2, col=1, show="•")
+        ctk.CTkLabel(c2, text="🔒 Token e senhas ficam criptografados (só abrem neste usuário/computador).",
+                     font=self.f_small, text_color=MUTED).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=18, pady=(6, 14))
 
-        bf = ttk.Frame(f, style="Card.TFrame")
-        bf.grid(row=12, column=0, columnspan=2)
-        ttk.Button(bf, text="✔  Salvar", style="Save.TButton", command=self._salvar_config).pack(side="left", padx=6)
-        ttk.Button(bf, text="Testar conexão", command=self._testar_api).pack(side="left", padx=6)
-        return f
+        bf = ctk.CTkFrame(s, fg_color="transparent")
+        bf.pack(pady=(2, 10))
+        self._btn_salvar(bf, self._salvar_config).pack(side="left", padx=6)
+        self._btn_sec(bf, "Testar conexão", self._testar_api).pack(side="left", padx=6)
 
     # ---------- aba Configurações (robô) ----------
     _CAPTCHA_OPCOES = {
@@ -362,41 +462,47 @@ class Painel(tk.Tk):
         "Manual (eu resolvo na tela)":                ("cdp", False, "buster"),
     }
 
-    def _aba_ajustes(self, parent):
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 20))
-        for c in range(3):
-            f.columnconfigure(c, weight=1)
+    def _aba_ajustes(self):
+        s = self._scroll(self.A_CFG)
+        self._ajuda_aba(s, "Como o robô resolve o captcha, quanto ele espera entre tentativas "
+                           "e o modo 24/7 (rodar sozinho em horários fixos).")
 
-        ttk.Label(f, text="Captcha", style="Secao.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        # Captcha
+        c = self._card(s, "Captcha", "Como o robô resolve o “não sou robô” que a COPEL pede no login.")
         atual = (config.MODO_NAVEGADOR, bool(config.CAPTCHA_AUTO), config.CAPTCHA_METODO)
         rotulo = next((r for r, v in self._CAPTCHA_OPCOES.items() if v == atual),
                       next(iter(self._CAPTCHA_OPCOES)))
-        self.captcha_cb = ttk.Combobox(f, values=list(self._CAPTCHA_OPCOES), state="readonly",
-                                       font=("Segoe UI", 10))
+        self.captcha_cb = self._optionmenu(c, list(self._CAPTCHA_OPCOES), self._row,
+                                           command=self._captcha_ajuda)
         self.captcha_cb.set(rotulo)
-        self.captcha_cb.grid(row=1, column=0, columnspan=3, sticky="ew", ipady=3, pady=(0, 8))
-        bx = ttk.Frame(f, style="Card.TFrame")
-        bx.grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 14))
-        ttk.Button(bx, text="🌐  Abrir Chrome do robô", command=self._abrir_chrome_robo).pack(side="left")
-        ttk.Label(bx, text="   1ª vez: instale o Buster nessa janela", style="Muted.TLabel").pack(side="left")
+        self.cap_ajuda = ctk.CTkLabel(c, text="", font=self.f_small, text_color=MUTED,
+                                      anchor="w", justify="left", wraplength=640)
+        self.cap_ajuda.grid(row=self._row + 1, column=0, sticky="w", padx=18, pady=(2, 6))
+        self._captcha_ajuda(rotulo)
+        bx = ctk.CTkFrame(c, fg_color="transparent")
+        bx.grid(row=self._row + 2, column=0, sticky="w", padx=14, pady=(2, 14))
+        self._btn_sec(bx, "🌐  Abrir Chrome do robô", self._abrir_chrome_robo).pack(side="left")
+        ctk.CTkLabel(bx, text="   só p/ Buster — 1ª vez: instale a extensão nessa janela",
+                     font=self.f_small, text_color=MUTED).pack(side="left")
 
         self.ajuste_vars = {}
 
-        def secao(linha, titulo):
-            ttk.Label(f, text=titulo, style="Secao.TLabel").grid(
-                row=linha, column=0, columnspan=3, sticky="w", pady=(6, 2))
-            ttk.Separator(f).grid(row=linha + 1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+        # Tempos e tentativas — avançado (escondido por padrão)
+        self.adv_card = self._card(s, None)
+        topo = ctk.CTkFrame(self.adv_card, fg_color="transparent")
+        topo.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+        topo.columnconfigure(0, weight=1)
+        ctk.CTkLabel(topo, text="Tempos e tentativas  (avançado)", font=self.f_sec,
+                     anchor="w").grid(row=0, column=0, sticky="w")
+        self._adv_aberto = False
+        self.btn_adv = ctk.CTkButton(topo, text="Mostrar", width=90, height=30,
+                                     fg_color=BTN_SEC, hover_color=BTN_SECD, text_color=BTN_SECT,
+                                     command=self._toggle_avancado)
+        self.btn_adv.grid(row=0, column=1, sticky="e")
+        self.adv_body = ctk.CTkFrame(self.adv_card, fg_color="transparent")
+        for cc in range(3):
+            self.adv_body.columnconfigure(cc, weight=1)
 
-        def campo(linha, col, rot, chave):
-            ttk.Label(f, text=rot, style="Field.TLabel").grid(
-                row=linha, column=col, sticky="w", pady=(0, 5), padx=(0, 16))
-            var = tk.StringVar(value=str(getattr(config, chave, 0)))
-            ttk.Spinbox(f, from_=0, to=9999, textvariable=var, width=9).grid(
-                row=linha + 1, column=col, sticky="w", pady=(0, 14))
-            self.ajuste_vars[chave] = var
-
-        secao(3, "Tempos e tentativas")
         for i, (rot, chave) in enumerate([
             ("PAUSA ENTRE LOGINS COPEL (s)",   "PAUSA_ENTRE_LOGINS_CAPTCHA_S"),
             ("PAUSA RGE / CELESC (s)",         "PAUSA_ENTRE_LOGINS_S"),
@@ -406,36 +512,177 @@ class Painel(tk.Tk):
             ("TENTATIVAS POR FATURA",          "MAX_TENTATIVAS"),
             ("PAUSA SE O GOOGLE BLOQUEAR (min)", "PAUSA_CAPTCHA_BLOQUEADO_MIN"),
         ]):
-            campo(5 + (i // 3) * 2, i % 3, rot, chave)
+            r0 = (i // 3) * 2
+            col = i % 3
+            var = tk.StringVar(value=str(getattr(config, chave, 0)))
+            ctk.CTkLabel(self.adv_body, text=rot, font=self.f_field, text_color=MUTED,
+                         anchor="w").grid(row=r0, column=col, sticky="w", padx=(8, 12), pady=(6, 2))
+            self._spin(self.adv_body, var, r0 + 1, col=col, lo=0, hi=9999)
+            self.ajuste_vars[chave] = var
 
-        secao(11, "Modo 24/7")
-        campo(13, 0, "CONSULTAR O CRM A CADA (min)", "CONTINUO_INTERVALO_MIN")
-        campo(13, 1, "FUNCIONA DAS (h)",             "CONTINUO_HORA_INICIO")
-        campo(13, 2, "ATÉ AS (h) · 24 = dia todo",   "CONTINUO_HORA_FIM")
-        ttk.Label(f, text="CONCESSIONÁRIAS A CADA CICLO", style="Field.TLabel").grid(
-            row=15, column=0, columnspan=3, sticky="w", pady=(0, 5))
-        cf = ttk.Frame(f, style="Card.TFrame")
-        cf.grid(row=16, column=0, columnspan=3, sticky="w", pady=(0, 14))
-        ativas = set(getattr(config, "CONTINUO_CONCESSIONARIAS", ["COPEL"]))
+        # Modo 24/7
+        c3 = self._card(s, "Modo 24/7", "Deixa o robô rodando sozinho dentro de um horário.", cols=3)
         self.conc_24h_vars = {}
+        for col, (rot, chave) in enumerate([
+            ("CONSULTAR O CRM A CADA (min)", "CONTINUO_INTERVALO_MIN"),
+            ("FUNCIONA DAS (h)",             "CONTINUO_HORA_INICIO"),
+            ("ATÉ AS (h) · 24 = dia todo",   "CONTINUO_HORA_FIM"),
+        ]):
+            var = tk.StringVar(value=str(getattr(config, chave, 0)))
+            ctk.CTkLabel(c3, text=rot, font=self.f_field, text_color=MUTED, anchor="w").grid(
+                row=self._row, column=col, sticky="w", padx=(18 if col == 0 else 8, 8), pady=(8, 2))
+            self._spin(c3, var, self._row + 1, col=col, lo=0, hi=9999)
+            self.ajuste_vars[chave] = var
+
+        self._rotulo(c3, "CONCESSIONÁRIAS A CADA CICLO", self._row + 2, span=3)
+        cf = ctk.CTkFrame(c3, fg_color="transparent")
+        cf.grid(row=self._row + 3, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 10))
+        ativas = set(getattr(config, "CONTINUO_CONCESSIONARIAS", ["COPEL"]))
         for nome, info in CONCESSIONARIAS.items():
             if not info.get("pronta"):
                 continue
             var = tk.BooleanVar(value=nome in ativas)
-            ttk.Checkbutton(cf, text=nome, variable=var).pack(side="left", padx=(0, 22))
+            ctk.CTkCheckBox(cf, text=nome, variable=var, onvalue=True, offvalue=False,
+                            fg_color=GREEN, hover_color=GREEN_D).pack(side="left", padx=(4, 20))
             self.conc_24h_vars[nome] = var
         self.email_24h_var = tk.BooleanVar(value=bool(getattr(config, "CONTINUO_EMAIL", True)))
-        ttk.Checkbutton(
-            f, text="✉  Também ler as faturas que chegam por E-MAIL (Energisa, CELESC, COPEL)",
-            variable=self.email_24h_var).grid(row=17, column=0, columnspan=3, sticky="w", pady=(2, 14))
+        ctk.CTkCheckBox(c3, text="✉  Também ler as faturas que chegam por E-MAIL (Energisa, CELESC, COPEL)",
+                        variable=self.email_24h_var, onvalue=True, offvalue=False,
+                        fg_color=GREEN, hover_color=GREEN_D).grid(
+            row=self._row + 4, column=0, columnspan=3, sticky="w", padx=18, pady=(2, 10))
 
-        bs = ttk.Frame(f, style="Card.TFrame")
-        bs.grid(row=20, column=0, columnspan=3, pady=(10, 0))
-        ttk.Button(bs, text="✔  Salvar", style="Save.TButton",
-                   command=self._salvar_ajustes).pack(side="left", padx=6)
-        ttk.Button(bs, text="📡  Status 24/7", command=self._ver_status_24h).pack(side="left", padx=6)
-        ttk.Button(bs, text="📘  Guia", command=self._abrir_guia).pack(side="left", padx=6)
-        return f
+        # ligar/desligar o 24/7 pelo painel (cria/remove a tarefa automática do Windows)
+        ctk.CTkLabel(c3, text="LIGAR / DESLIGAR O 24/7 NESTE COMPUTADOR", font=self.f_field,
+                     text_color=MUTED, anchor="w").grid(
+            row=self._row + 5, column=0, columnspan=3, sticky="w", padx=18, pady=(6, 2))
+        lig = ctk.CTkFrame(c3, fg_color="transparent")
+        lig.grid(row=self._row + 6, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 14))
+        self.btn_24h_on = ctk.CTkButton(lig, text="🟢  Ativar 24/7", height=38, font=self.f_small,
+                                        fg_color=GREEN, hover_color=GREEN_D, command=self._ativar_24h)
+        self.btn_24h_on.pack(side="left", padx=(4, 8))
+        self.btn_24h_off = ctk.CTkButton(lig, text="⏹  Desativar 24/7", height=38, font=self.f_small,
+                                         fg_color=BTN_SEC, hover_color=BTN_SECD, text_color=BTN_SECT,
+                                         command=self._desativar_24h)
+        self.btn_24h_off.pack(side="left")
+        self.lbl_24h_estado = ctk.CTkLabel(lig, text="", font=self.f_small, text_color=MUTED)
+        self.lbl_24h_estado.pack(side="left", padx=(14, 0))
+
+        bs = ctk.CTkFrame(s, fg_color="transparent")
+        bs.pack(pady=(2, 10))
+        self._btn_salvar(bs, self._salvar_ajustes).pack(side="left", padx=6)
+        self._btn_sec(bs, "📡  Status 24/7", self._ver_status_24h).pack(side="left", padx=6)
+        self._btn_sec(bs, "📘  Guia", self._abrir_guia).pack(side="left", padx=6)
+        self._atualizar_estado_24h()
+
+    def _toggle_avancado(self):
+        self._adv_aberto = not self._adv_aberto
+        if self._adv_aberto:
+            self.adv_body.grid(row=1, column=0, sticky="ew", padx=8, pady=(6, 12))
+            self.btn_adv.configure(text="Esconder")
+        else:
+            self.adv_body.grid_forget()
+            self.btn_adv.configure(text="Mostrar")
+
+    _CAPTCHA_AJUDA = {
+        "Extensão Buster (Chrome do robô)":
+            "ℹ  O “Buster” é uma extensão do Chrome que resolve o captcha “não sou robô” ouvindo "
+            "o áudio. Instala só na 1ª vez (botão “Abrir Chrome do robô” abaixo). É a opção padrão.",
+        "Solver próprio (áudio, faster-whisper)":
+            "ℹ  O robô resolve o captcha sozinho, pelo áudio (faster-whisper) — sem extensão. "
+            "Não precisa instalar nada no Chrome.",
+        "Manual (eu resolvo na tela)":
+            "ℹ  O robô abre a janela e PARA no captcha pra você resolver na mão. Use só se as "
+            "opções automáticas falharem.",
+    }
+
+    def _captcha_ajuda(self, escolha=None):
+        if hasattr(self, "cap_ajuda"):
+            self.cap_ajuda.configure(text=self._CAPTCHA_AJUDA.get(
+                escolha or self.captcha_cb.get(), ""))
+
+    # ---------- ligar/desligar o modo 24/7 (tarefa do Windows) ----------
+    def _tarefa_24h_ativa(self) -> bool:
+        try:
+            out = subprocess.run(["schtasks", "/query", "/tn", "RoboFaturas24h"],
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                                 capture_output=True, text=True, timeout=10)
+            return out.returncode == 0
+        except Exception:
+            return False
+
+    def _atualizar_estado_24h(self):
+        if not hasattr(self, "lbl_24h_estado"):
+            return
+        if self._tarefa_24h_ativa():
+            self.lbl_24h_estado.configure(text="● está ATIVO neste PC", text_color=GREEN)
+        else:
+            self.lbl_24h_estado.configure(text="○ está desligado", text_color=MUTED)
+
+    def _rodar_ps_24h(self, remover: bool):
+        ps1 = RAIZ / "instalacao" / "instalar_24h.ps1"
+        if not ps1.exists():
+            messagebox.showerror("24/7", f"Não achei o script:\n{ps1}")
+            return None
+        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1)]
+        if remover:
+            cmd.append("-Remover")
+        try:
+            self.configure(cursor="watch")
+            self.update()
+        except Exception:
+            pass
+        out = None
+        try:
+            out = subprocess.run(cmd, cwd=str(RAIZ),
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                                 capture_output=True, text=True, timeout=90)
+        except Exception as e:
+            messagebox.showerror("24/7", str(e))
+        try:
+            self.configure(cursor="")
+        except Exception:
+            pass
+        self._atualizar_estado_24h()
+        return out
+
+    def _ativar_24h(self):
+        out = self._rodar_ps_24h(remover=False)
+        if out is None:
+            return
+        if out.returncode == 0:
+            if messagebox.askyesno(
+                    "24/7 ativado",
+                    "Modo 24/7 LIGADO: o robô sobe sozinho a cada logon e roda nos horários "
+                    "definidos acima.\n\nDesligar a suspensão/hibernação do PC na tomada "
+                    "(recomendado, pra ele não dormir)?"):
+                falhou = False
+                for args in (["standby-timeout-ac", "0"], ["hibernate-timeout-ac", "0"]):
+                    try:
+                        r = subprocess.run(["powercfg", "/change"] + args,
+                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                                           capture_output=True, text=True, timeout=15)
+                        falhou = falhou or r.returncode != 0
+                    except Exception:
+                        falhou = True
+                if falhou:
+                    messagebox.showinfo("Suspensão", "Não consegui mudar a energia automaticamente "
+                                        "(pode precisar de administrador). Ajuste em Configurações do "
+                                        "Windows › Sistema › Energia: “Suspensão” = Nunca (na tomada).")
+        else:
+            messagebox.showerror("24/7", "Não consegui ligar o 24/7.\n\n"
+                                 + ((out.stderr or out.stdout).strip()[-600:] or "falhou"))
+
+    def _desativar_24h(self):
+        if not messagebox.askyesno("Desativar 24/7", "Desligar o modo 24/7 e remover a tarefa "
+                                   "automática deste computador?"):
+            return
+        out = self._rodar_ps_24h(remover=True)
+        if out is None:
+            return
+        if out.returncode == 0:
+            messagebox.showinfo("24/7", "Modo 24/7 desligado.")
+        else:
+            messagebox.showerror("24/7", (out.stderr or out.stdout).strip()[-600:] or "falhou")
 
     # ---------- aba E-mail ----------
     _QUANDO = {
@@ -445,76 +692,68 @@ class Painel(tk.Tk):
         "Desligado":                                 "desligado",
     }
 
-    def _aba_email(self, parent):
+    def _aba_email(self):
         import notificacao
         c = notificacao.cfg()
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 20))
-        for col in range(3):
-            f.columnconfigure(col, weight=1)
+        s = self._scroll(self.A_MAIL)
+        self._ajuda_aba(s, "E-mails de aviso do robô (não é a leitura de faturas — essa fica na aba "
+                           "“Faturas (e-mail)”). Defina quem recebe, quando, e o servidor de envio.")
 
-        def rot(linha, col, texto, span=1):
-            ttk.Label(f, text=texto, style="Field.TLabel").grid(
-                row=linha, column=col, columnspan=span, sticky="w", pady=(0, 5), padx=(0, 12))
-
-        ttk.Label(f, text="Quem recebe", style="Secao.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Separator(f).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 12))
-        rot(2, 0, "DESTINATÁRIOS  (separe por vírgula)", 3)
+        q = self._card(s, "Quem recebe", cols=3)
+        self._rotulo(q, "DESTINATÁRIOS  (separe por vírgula)", 1, span=3)
         self.em_dest = tk.StringVar(value=", ".join(c["destinatarios"]))
-        ttk.Entry(f, textvariable=self.em_dest, font=("Segoe UI", 10)).grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(0, 12))
-        rot(4, 0, "QUANDO ENVIAR", 2)
-        rot(4, 2, "HORA DO RESUMO DIÁRIO")
-        self.em_quando = ttk.Combobox(f, values=list(self._QUANDO), state="readonly", font=("Segoe UI", 10))
+        self._entry(q, self.em_dest, 2, span=3)
+        self._rotulo(q, "QUANDO ENVIAR", 3, span=2)
+        self._rotulo(q, "HORA DO RESUMO DIÁRIO", 3, col=2)
+        self.em_quando = self._optionmenu(q, list(self._QUANDO), 4, span=2)
         self.em_quando.set(next((k for k, v in self._QUANDO.items() if v == c["quando"]), "Desligado"))
-        self.em_quando.grid(row=5, column=0, columnspan=2, sticky="ew", ipady=2, pady=(0, 10), padx=(0, 12))
         self.em_hora = tk.StringVar(value=str(c.get("hora_resumo", 18)))
-        ttk.Spinbox(f, from_=0, to=23, textvariable=self.em_hora, width=9).grid(
-            row=5, column=2, sticky="w", pady=(0, 10))
-        al = ttk.Frame(f, style="Card.TFrame")
-        al.grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 14))
+        self._spin(q, self.em_hora, 4, col=2, lo=0, hi=23)
+        al = ctk.CTkFrame(q, fg_color="transparent")
+        al.grid(row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 14))
         self.em_alertas = tk.BooleanVar(value=bool(c.get("alertas", True)))
-        ttk.Checkbutton(al, text="Alertas (CRM fora, captcha falhando, ciclo travado, disco cheio, sucesso abaixo de",
-                        variable=self.em_alertas).pack(side="left")
+        ctk.CTkCheckBox(al, text="Alertas (CRM fora, captcha falhando, ciclo travado, disco cheio, sucesso abaixo de",
+                        variable=self.em_alertas, onvalue=True, offvalue=False,
+                        fg_color=GREEN, hover_color=GREEN_D).pack(side="left")
         self.em_limite = tk.StringVar(value=str(c.get("limite_taxa", 50)))
-        ttk.Spinbox(al, from_=0, to=100, textvariable=self.em_limite, width=4).pack(side="left", padx=4)
-        ttk.Label(al, text="%)", style="TLabel").pack(side="left")
+        ctk.CTkEntry(al, textvariable=self.em_limite, width=52, height=30, justify="center",
+                     fg_color=ENTRY_FG).pack(side="left", padx=6)
+        ctk.CTkLabel(al, text="%)", font=self.f_small).pack(side="left")
 
-        ttk.Label(f, text="Servidor de envio (SMTP)", style="Secao.TLabel").grid(row=7, column=0, columnspan=3, sticky="w")
-        ttk.Separator(f).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(2, 12))
-        rot(9, 0, "PROVEDOR")
-        rot(9, 1, "SERVIDOR")
-        rot(9, 2, "PORTA / SEGURANÇA")
-        self.em_prov = ttk.Combobox(f, values=list(notificacao.PROVEDORES), state="readonly", font=("Segoe UI", 10))
+        srv = self._card(s, "Servidor de envio (SMTP)", cols=3)
+        self._rotulo(srv, "PROVEDOR", 1, col=0)
+        self._rotulo(srv, "SERVIDOR", 1, col=1)
+        self._rotulo(srv, "PORTA / SEGURANÇA", 1, col=2)
+        self.em_prov = self._optionmenu(srv, list(notificacao.PROVEDORES), 2, col=0,
+                                        command=self._email_provedor)
         self.em_prov.set(next((n for n, v in notificacao.PROVEDORES.items() if v[0] and v[0] == c.get("smtp_host")),
                               "Outro (preencher)"))
-        self.em_prov.grid(row=10, column=0, sticky="ew", ipady=2, pady=(0, 10), padx=(0, 12))
-        self.em_prov.bind("<<ComboboxSelected>>", self._email_provedor)
         self.em_host = tk.StringVar(value=c.get("smtp_host", ""))
-        ttk.Entry(f, textvariable=self.em_host, font=("Segoe UI", 10)).grid(
-            row=10, column=1, sticky="ew", pady=(0, 10), padx=(0, 12))
-        ps = ttk.Frame(f, style="Card.TFrame")
-        ps.grid(row=10, column=2, sticky="w", pady=(0, 10))
+        self._entry(srv, self.em_host, 2, col=1)
+        ps = ctk.CTkFrame(srv, fg_color="transparent")
+        ps.grid(row=2, column=2, sticky="w", padx=8, pady=(0, 6))
         self.em_porta = tk.StringVar(value=str(c.get("smtp_porta", 587)))
-        ttk.Spinbox(ps, from_=1, to=65535, textvariable=self.em_porta, width=6).pack(side="left")
-        self.em_seg = ttk.Combobox(ps, values=["starttls", "ssl", "nenhuma"], state="readonly", width=9)
+        ctk.CTkEntry(ps, textvariable=self.em_porta, width=66, height=34, justify="center",
+                     fg_color=ENTRY_FG).pack(side="left")
+        self.em_seg = ctk.CTkOptionMenu(ps, values=["starttls", "ssl", "nenhuma"], width=110, height=34,
+                                        fg_color=ENTRY_FG, text_color=BTN_SECT, button_color=GREEN,
+                                        button_hover_color=GREEN_D)
         self.em_seg.set(c.get("seguranca", "starttls"))
         self.em_seg.pack(side="left", padx=(6, 0))
-        rot(11, 0, "USUÁRIO (e-mail que envia)")
-        rot(11, 1, "SENHA  (Gmail: senha de app)")
-        rot(11, 2, "REMETENTE  (se diferente)")
+        self._rotulo(srv, "USUÁRIO (e-mail que envia)", 3, col=0)
+        self._rotulo(srv, "SENHA  (Gmail: senha de app)", 3, col=1)
+        self._rotulo(srv, "REMETENTE  (se diferente)", 3, col=2)
         self.em_user = tk.StringVar(value=c.get("usuario", ""))
         self.em_senha = tk.StringVar(value=c.get("senha", ""))
         self.em_rem = tk.StringVar(value=c.get("remetente", ""))
-        ttk.Entry(f, textvariable=self.em_user, font=("Segoe UI", 10)).grid(row=12, column=0, sticky="ew", padx=(0, 12))
-        ttk.Entry(f, textvariable=self.em_senha, show="•", font=("Segoe UI", 10)).grid(
-            row=12, column=1, sticky="ew", padx=(0, 12))
-        ttk.Entry(f, textvariable=self.em_rem, font=("Segoe UI", 10)).grid(row=12, column=2, sticky="ew")
+        self._entry(srv, self.em_user, 4, col=0)
+        self._entry(srv, self.em_senha, 4, col=1, show="•")
+        self._entry(srv, self.em_rem, 4, col=2)
 
-        bs = ttk.Frame(f, style="Card.TFrame")
-        bs.grid(row=20, column=0, columnspan=3, pady=(18, 0))
-        ttk.Button(bs, text="✔  Salvar", style="Save.TButton", command=self._salvar_email).pack(side="left", padx=6)
-        ttk.Button(bs, text="✉  Enviar e-mail de teste", command=self._testar_email).pack(side="left", padx=6)
-        return f
+        bs = ctk.CTkFrame(s, fg_color="transparent")
+        bs.pack(pady=(2, 10))
+        self._btn_salvar(bs, self._salvar_email).pack(side="left", padx=6)
+        self._btn_sec(bs, "✉  Enviar e-mail de teste", self._testar_email).pack(side="left", padx=6)
 
     def _email_provedor(self, _evt=None):
         import notificacao
@@ -556,12 +795,18 @@ class Painel(tk.Tk):
         if not notificacao.configurado(c):
             messagebox.showwarning("E-mail", "Preencha destinatários, servidor e usuário/remetente.")
             return
-        self.config(cursor="watch")
-        self.update()
+        try:
+            self.configure(cursor="watch")
+            self.update()
+        except Exception:
+            pass
         corpo = notificacao._layout("E-mail de teste", "Robô de Faturas",
                                     "<p>Se você recebeu este e-mail, o envio está funcionando. ✅</p>")
         ok = notificacao.enviar("[Robô de Faturas] Teste de e-mail", corpo, c=c)
-        self.config(cursor="")
+        try:
+            self.configure(cursor="")
+        except Exception:
+            pass
         if ok:
             messagebox.showinfo("E-mail", f"Enviado para: {', '.join(c['destinatarios'])}")
         else:
@@ -632,7 +877,7 @@ class Painel(tk.Tk):
             messagebox.showerror("Erro", str(e))
 
     def _toggle_token(self):
-        self.token_entry.config(show="" if self.mostrar.get() else "•")
+        self.token_entry.configure(show="" if self.mostrar.get() else "•")
 
     # ---------- ações ----------
     def _conc(self) -> str:
@@ -729,7 +974,8 @@ class Painel(tk.Tk):
         self._set_rodando(True)
         self.status_var.set("Iniciando…")
         self.cont_var.set("")
-        self.barra.config(value=0)
+        self.barra.configure(mode="determinate")
+        self.barra.set(0)
         threading.Thread(target=self._ler_saida, args=(self._proc,), daemon=True).start()
         self.after(150, self._poll_fila)
 
@@ -758,8 +1004,8 @@ class Painel(tk.Tk):
         self._set_rodando(True)
         self.status_var.set("Lendo os e-mails…")
         self.cont_var.set("")
-        self.barra.config(mode="indeterminate")
-        self.barra.start(12)
+        self.barra.configure(mode="indeterminate")
+        self.barra.start()
         threading.Thread(target=self._ler_saida, args=(self._proc,), daemon=True).start()
         self.after(150, self._poll_fila)
 
@@ -824,7 +1070,7 @@ class Painel(tk.Tk):
                     elif val == 0:
                         self.status_var.set("Concluído.")
                         if self._total:
-                            self.barra.config(value=100)
+                            self.barra.set(1)
                             self.cont_var.set(f"{self._total} / {self._total}")
                     else:
                         self.status_var.set(f"Encerrado (código {val}).")
@@ -841,7 +1087,7 @@ class Painel(tk.Tk):
             atual, total = int(m.group(1)), int(m.group(2))
             self._total = total
             self.cont_var.set(f"{atual} / {total}")
-            self.barra.config(value=(atual / total * 100) if total else 0)
+            self.barra.set((atual / total) if total else 0)
             self.status_var.set("Processando faturas…")
             return
         r = re.search(r"RESUMO\s*\([^)]*\):\s*(.+)", linha)
@@ -865,13 +1111,13 @@ class Painel(tk.Tk):
             self.status_var.set("Gerando o relatório…")
 
     def _set_rodando(self, rodando: bool):
-        self.btn_rodar.config(state="disabled" if rodando else "normal")
-        self.btn_email.config(state="disabled" if rodando else "normal")
-        self.btn_parar.config(state="normal" if rodando else "disabled")
+        self.btn_rodar.configure(state="disabled" if rodando else "normal")
+        self.btn_email.configure(state="disabled" if rodando else "normal")
+        self.btn_parar.configure(state="normal" if rodando else "disabled")
         if not rodando:                     # para a barra indeterminada (modo e-mail)
             try:
                 self.barra.stop()
-                self.barra.config(mode="determinate")
+                self.barra.configure(mode="determinate")
             except Exception:
                 pass
 
@@ -881,7 +1127,7 @@ class Painel(tk.Tk):
         if not proc or proc.poll() is not None:
             return
         self._parado = True
-        self.btn_parar.config(state="disabled")
+        self.btn_parar.configure(state="disabled")
         self.status_var.set("Parando… (fechando o navegador)")
         try:
             # taskkill /T mata o start.py + filhos (Chrome/Playwright); /F força
@@ -896,44 +1142,36 @@ class Painel(tk.Tk):
         # o _ler_saida detecta o fim e o _poll_fila mostra "Parado pelo usuário"
 
     # ---------- aba Faturas por e-mail (Microsoft Graph) ----------
-    def _aba_faturas_email(self, parent):
-        f = ttk.Frame(parent, style="Card.TFrame", padding=(28, 24))
-        f.columnconfigure(0, weight=1)
+    def _aba_faturas_email(self):
+        s = self._scroll(self.A_FAT)
+        self._ajuda_aba(s, "Leitura das faturas que chegam por e-mail, via Microsoft Graph "
+                           "(app-only, somente leitura). O segredo fica criptografado nesta máquina.")
 
-        ttk.Label(f, text="Leitura de faturas por e-mail (Microsoft Graph)",
-                  style="Secao.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Separator(f).grid(row=1, column=0, sticky="ew", pady=(2, 10))
-        ttk.Label(f, text="Acesso app-only (somente leitura, Mail.Read). O segredo fica "
-                          "criptografado nesta máquina.", style="Muted.TLabel").grid(
-            row=2, column=0, sticky="w", pady=(0, 12))
-
-        def campo(linha, rotulo, var, mostrar=None):
-            ttk.Label(f, text=rotulo, style="Field.TLabel").grid(
-                row=linha, column=0, sticky="w", pady=(0, 4))
-            ttk.Entry(f, textvariable=var, font=("Segoe UI", 10),
-                      **({"show": mostrar} if mostrar else {})).grid(
-                row=linha + 1, column=0, sticky="ew", pady=(0, 12))
-
+        c = self._card(s, "Microsoft Graph (app-only, Mail.Read)")
+        self._rotulo(c, "DIRECTORY (TENANT) ID", self._row,
+                     tip="ID do diretório (tenant) do Azure AD da sua organização.")
         self.fe_tenant = tk.StringVar(value=getattr(config, "EMAIL_GRAPH_TENANT", ""))
+        self._entry(c, self.fe_tenant, self._row + 1)
+        self._rotulo(c, "APPLICATION (CLIENT) ID", self._row + 2,
+                     tip="ID do aplicativo registrado no Azure (App registration).")
         self.fe_client = tk.StringVar(value=getattr(config, "EMAIL_GRAPH_CLIENT", ""))
-        self.fe_caixas = tk.StringVar(value=", ".join(getattr(config, "EMAIL_CAIXAS", []) or []))
-        self.fe_secret = tk.StringVar(value="")
+        self._entry(c, self.fe_client, self._row + 3)
+
         tem_seg = bool((self.local.get("email_secret") or "").strip())
+        self._rotulo(c, "SEGREDO (VALOR)" + ("   — já salvo; deixe em branco pra manter" if tem_seg
+                                             else "   — cole o Valor do segredo do app"), self._row + 4,
+                     tip="O 'Valor' do client secret do App registration. Criptografado (DPAPI).")
+        self.fe_secret = tk.StringVar(value="")
+        self._entry(c, self.fe_secret, self._row + 5, show="•")
+        self._rotulo(c, "CAIXAS A LER  (separe por vírgula)", self._row + 6,
+                     tip="E-mails das caixas que o robô vai ler, ex.: faturas@empresa.com, matriz@empresa.com")
+        self.fe_caixas = tk.StringVar(value=", ".join(getattr(config, "EMAIL_CAIXAS", []) or []))
+        self._entry(c, self.fe_caixas, self._row + 7)
 
-        campo(3, "DIRECTORY (TENANT) ID", self.fe_tenant)
-        campo(5, "APPLICATION (CLIENT) ID", self.fe_client)
-        campo(7, "SEGREDO (VALOR)" + ("   — já salvo; deixe em branco pra manter" if tem_seg
-                                      else "   — cole o Valor do segredo do app"),
-              self.fe_secret, mostrar="•")
-        campo(9, "CAIXAS A LER  (separe por vírgula)", self.fe_caixas)
-
-        bs = ttk.Frame(f, style="Card.TFrame")
-        bs.grid(row=20, column=0, pady=(6, 0))
-        ttk.Button(bs, text="✔  Salvar", style="Save.TButton",
-                   command=self._salvar_faturas_email).pack(side="left", padx=6)
-        ttk.Button(bs, text="🔌  Testar leitura",
-                   command=self._testar_faturas_email).pack(side="left", padx=6)
-        return f
+        bs = ctk.CTkFrame(s, fg_color="transparent")
+        bs.pack(pady=(2, 10))
+        self._btn_salvar(bs, self._salvar_faturas_email).pack(side="left", padx=6)
+        self._btn_sec(bs, "🔌  Testar leitura", self._testar_faturas_email).pack(side="left", padx=6)
 
     def _salvar_faturas_email(self, avisar=True) -> bool:
         import segredos

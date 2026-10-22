@@ -1,3 +1,6 @@
+# ---- Painel (GUI moderna) ----
+customtkinter>=6.0        # painel.py — widgets modernos (cantos arredondados, light/dark)
+
 # ---- Robô (Playwright + planilha/PDF/API) ----
 playwright>=1.44
 openpyxl>=3.1
